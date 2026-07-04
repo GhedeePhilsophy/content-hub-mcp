@@ -1,0 +1,21 @@
+# Secrets — never commit
+.env
+token.json
+credentials.json
+
+# Local harness settings
+.claude/settings.json
+.claude/settings.local.json
+
+# Excel working copies (calendars live in the Cowork project, not the repo)
+*.xlsx
+
+# Scratch / external tool outputs
+generated/
+fal.ai/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/

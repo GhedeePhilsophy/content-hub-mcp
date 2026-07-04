@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "ghedee-content-hub": {
+      "command": "C:\\Kobie\\Projects\\Wiah\\Ghedee Philosophy Website\\content-hub-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Kobie\\Projects\\Wiah\\Ghedee Philosophy Website\\content-hub-mcp\\server.py"
+      ],
+      "env": {
+        "SOCIAL_CALENDAR_ROOT_ID": "your-social-calendar-folder-id",
+        "GEMINI_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
