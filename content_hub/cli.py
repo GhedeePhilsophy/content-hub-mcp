@@ -90,7 +90,8 @@ def _register_social(workflows) -> None:
 
     p2 = ops.add_parser("preview", help="Build a self-contained HTML review page of the posts.")
     p2.add_argument("calendar_id")
-    p2.add_argument("version", type=int)
+    p2.add_argument("version", type=int, nargs="?", default=None,
+                    help="Draft version to preview; omit to use the latest on Drive.")
     p2.add_argument("--out", help="Output .html path (default: alongside the calendar).")
     p2.add_argument("--quarter-folder", help="Override the derived quarter folder on "
                     "Drive, e.g. 'Q3 2026'.")

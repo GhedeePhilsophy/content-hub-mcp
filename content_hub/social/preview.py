@@ -182,15 +182,40 @@ class _DriveSource:
         if not quarter:
             raise RuntimeError(f"Could not derive a quarter folder from {calendar_id!r}; "
                                "pass quarter_folder.")
+        self.calendar_id = calendar_id
         base = drive.find_folder_path(root, [quarter])
+        if not base:
+            raise FileNotFoundError(f"Drive folder {quarter!r} not found under the "
+                                    "Social Calendar root.")
         self.images = self._list(base, rules.SUBFOLDER_IMAGES)
         self.videos = self._list(base, rules.SUBFOLDER_VIDEO)
-        carousel_parent = drive.find_folder_path(base, rules.SUBFOLDER_CAROUSELS) if base else None
+        carousel_parent = drive.find_folder_path(base, rules.SUBFOLDER_CAROUSELS)
         self.carousels = drive.list_children(carousel_parent) if carousel_parent else []
+        self.docs = drive.find_folder_path(base, [rules.SUBFOLDER_DOCS])
 
     def _list(self, base, subpath) -> list[dict]:
         fid = self.drive.find_folder_path(base, subpath) if base else None
         return self.drive.list_children(fid) if fid else []
+
+    def fetch_calendar(self, version: int | None) -> tuple[int, bytes]:
+        """Download the calendar .xlsx from 00_Calendar & Docs — the given version, or
+        the latest if version is None. Returns (version, bytes)."""
+        if not self.docs:
+            raise FileNotFoundError(f"{rules.SUBFOLDER_DOCS} not found on Drive.")
+        best = None  # (version, file)
+        for f in self.drive.list_children(self.docs):
+            parsed = rules.parse_calendar_filename(f["name"])
+            if parsed and parsed[0] == self.calendar_id:
+                if version is not None and parsed[1] != version:
+                    continue
+                if best is None or parsed[1] > best[0]:
+                    best = (parsed[1], f)
+        if not best:
+            want = f"v{version}" if version else "any version"
+            raise FileNotFoundError(
+                f"no {rules.CALENDAR_PREFIX}_{self.calendar_id}_{want}.xlsx in "
+                f"{rules.SUBFOLDER_DOCS} on Drive.")
+        return best[0], self.drive.download_bytes(best[1]["id"])
 
     def assets_for(self, row_id: str) -> dict:
         pre = f"{row_id}_"
@@ -410,18 +435,18 @@ def _grid_cell(job, assets: dict, cache=None) -> str:
 
 
 # --- page assembly ---------------------------------------------------------
-def build_preview(calendar_id: str, version: int, *, out_path: Path | None = None,
-                  quarter_folder: str | None = None, no_cache: bool = False,
-                  emit=None) -> dict:
-    """Build the HTML review page. All post assets are read from Google Drive;
-    thumbnails are cached by Drive md5 so re-runs only re-fetch what changed."""
+def build_preview(calendar_id: str, version: int | None = None, *,
+                  out_path: Path | None = None, quarter_folder: str | None = None,
+                  no_cache: bool = False, emit=None) -> dict:
+    """Build the HTML review page. Both the calendar workbook and every post asset are
+    read from Google Drive (the shared, actively-edited copy) — ``version`` selects a
+    specific draft, or the latest on Drive when omitted. Thumbnails are cached by Drive
+    md5 so re-runs only re-fetch what changed."""
+    import io
     import sys
     from .calendar import Calendar
     emit = emit or (lambda m, **k: print(m, file=sys.stderr))
 
-    path = rules.calendar_dir() / rules.calendar_filename(calendar_id, version)
-    if not path.exists():
-        raise FileNotFoundError(f"local calendar not found: {path}")
     cache = None if no_cache else _ImgCache(
         config.generated_dir() / f".preview_cache_{calendar_id}.json")
 
@@ -431,16 +456,18 @@ def build_preview(calendar_id: str, version: int, *, out_path: Path | None = Non
     avatar_css = (f'.ava-photo{{background-image:url({_AVATAR_URI})}}'
                   if _AVATAR_URI else "")
 
-    # Assets come from Google Drive only.
+    # Calendar + assets both come from Google Drive.
     from ..core.drive import DriveClient
     client = DriveClient(config.credentials_path(), config.token_path(),
                          allow_interactive=False)
     drive_source = _DriveSource(client, calendar_id, quarter_folder)
+    version, xlsx_bytes = drive_source.fetch_calendar(version)
+    emit(f"calendar: {rules.calendar_filename(calendar_id, version)} (from Drive)")
 
     def resolve(row_id: str) -> dict:
         return drive_source.assets_for(row_id)
 
-    cal = Calendar(path)
+    cal = Calendar(io.BytesIO(xlsx_bytes))
     jobs = [j for j in cal.read_jobs() if j.row_id]
     jobs.sort(key=lambda j: (j.date or "9999", j.platform))
 

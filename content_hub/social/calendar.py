@@ -138,10 +138,17 @@ class RowJob:
 class Calendar:
     """A loaded calendar workbook + its header map. Read jobs, then write links back."""
 
-    def __init__(self, path: Path):
+    def __init__(self, source):
+        """``source`` is a filesystem path, or a file-like object / BytesIO (e.g. an
+        xlsx downloaded from Drive for a read-only preview). ``path`` is None for the
+        latter, so save() is a no-op target and must be given an explicit path."""
         import openpyxl
-        self.path = Path(path)
-        self.wb = openpyxl.load_workbook(self.path)
+        if isinstance(source, (str, Path)):
+            self.path = Path(source)
+            self.wb = openpyxl.load_workbook(self.path)
+        else:
+            self.path = None
+            self.wb = openpyxl.load_workbook(source)
         self.ws = self._pick_sheet()
         self.cols = self._map_headers()
 
