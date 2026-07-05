@@ -106,8 +106,8 @@ def plan_visual(visual_type: str | None, fmt: str | None) -> VisualPlan:
         # A true multi-slide carousel is Format == 'Carousel' exactly; the mixed
         # 'Single image / carousel' string is treated as a single feed image.
         if f == "carousel":
-            # 4:5 is Instagram's tallest feed/carousel ratio (uncropped). The model
-            # can't render 4:5 directly, so core.media generates 3:4 and crops to it.
+            # 4:5 is Instagram's tallest feed/carousel ratio. gpt-image-2 renders it
+            # natively (1024x1280), so no crop is needed.
             return VisualPlan(kind="carousel", aspect_ratio="4:5", generate=True)
         return VisualPlan(kind="image", aspect_ratio="1:1", generate=True)
     if vt == VT_RECORDED:

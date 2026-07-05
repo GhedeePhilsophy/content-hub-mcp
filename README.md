@@ -56,7 +56,7 @@ Format second — the `Format` column alone is ambiguous):
 | Visual Type | Format | Kind | Aspect | Files |
 |---|---|---|---|---|
 | AI text-to-video | any | video | 16:9 | 1 (`{RowID}_{Plat}_{Slug}_v1.mp4`) |
-| AI text-to-image | `Carousel` | carousel | 3:4 | N slides (`slide-1..N_v1.png` in a group folder) |
+| AI text-to-image | `Carousel` | carousel | 4:5 | N slides (`slide-1..N_v1.png` in a group folder) |
 | AI text-to-image | anything else | image | 1:1 | 1 (`{RowID}_{Plat}_{Slug}_v1.png`) |
 
 Carousels read a **`Slides`** column for the slide count (defaults to 4). The
@@ -83,8 +83,13 @@ subfolder under the calendar folder — so a rehearsal can never overwrite a rea
 ```bash
 python -m venv .venv && .venv\Scripts\Activate.ps1   # PowerShell
 pip install -r requirements.txt
-cp .env.example .env        # fill in GEMINI_API_KEY + SOCIAL_CALENDAR_ROOT_ID
+cp .env.example .env        # fill in OPENAI_API_KEY (+ GEMINI_API_KEY for video) + SOCIAL_CALENDAR_ROOT_ID
 ```
+
+**Media keys:** images use **OpenAI `gpt-image-2`** (`OPENAI_API_KEY`; your account may
+need org verification to access it); video uses **Google Veo** (`GEMINI_API_KEY`). A run
+only needs the key(s) for the media types it generates — an `--only image` run never
+touches the Gemini key, and vice-versa.
 
 **Google auth (one-time, interactive):** create a Desktop-app OAuth client in
 Google Cloud Console → **APIs & Services → Credentials**, enable both the **Drive
@@ -147,7 +152,8 @@ Register it as a local MCP/connector in Claude Cowork — copy
       "args": ["…\\content-hub-mcp\\server.py"],
       "env": {
         "SOCIAL_CALENDAR_ROOT_ID": "your-social-calendar-folder-id",
-        "GEMINI_API_KEY": "your-key-here"
+        "OPENAI_API_KEY": "your-openai-key-here",
+        "GEMINI_API_KEY": "your-gemini-key-here"
       }
     }
   }
@@ -161,10 +167,16 @@ workflow, each taking a `mode` argument. Do the one-time Drive consent first
 (above) so `token.json` exists before Cowork launches the server headless.
 
 ## Notes
-- **Cost** figures come from a rough price table in `core/media.py` — a guide, not
-  a bill. Confirm against current [Google pricing](https://ai.google.dev/gemini-api/docs/pricing).
-- **Model deprecations:** Google rotates `-preview` names. On a model-not-found
-  error, update `DEFAULT_IMAGE_MODEL` / `DEFAULT_VIDEO_MODEL` in `core/config.py`.
+- **Images: OpenAI `gpt-image-2`.** Rendered at native aspect ratios (1:1 → 1024×1024,
+  4:5 carousel → 1024×1280), `quality=high`, `moderation=low`. No crop step — the model
+  renders the requested ratio directly.
+- **Cost** figures come from a rough price table in `core/media.py` — a guide, not a
+  bill. Images bill per output token (~$0.12–0.16/image at high quality); confirm with
+  [OpenAI's image-cost calculator](https://developers.openai.com/api/docs/guides/image-generation).
+  Video is per-second [Veo pricing](https://ai.google.dev/gemini-api/docs/pricing).
+- **Model access / deprecations:** if images 404, confirm your OpenAI account can use
+  `gpt-image-2` (org verification may be required). Google rotates Veo `-preview` names —
+  on a video model-not-found error, update `DEFAULT_VIDEO_MODEL` in `core/config.py`.
 - **Veo resolution/duration:** `1080p` only renders at 8s; hero clips default to
   720p/6s. Validated before spending.
 - **Reference docs** (the Cowork workflow prompt and the Drive asset-structure

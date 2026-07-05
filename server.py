@@ -55,8 +55,9 @@ def social_generate_media(calendar_id: str, mode: str = "dry-run",
         mode: 'dry-run' (plan + cost only, sheet untouched), 'mock' (safe rehearsal to a
             mock Drive dest + a local *.mock.xlsx), or 'live' (writes the live sheet).
         only: optionally limit to 'image' or 'video'.
-        video_model / image_model: override the model for this run only (e.g.
-            'veo-3.1-fast-generate-preview'); the model actually used is written to the sheet.
+        video_model / image_model: override the model for this run only (e.g. video
+            'veo-3.1-fast-generate-preview', image 'gpt-image-2'); the model actually used
+            is written to the sheet.
         video_duration: target video length in seconds; Veo chains extensions past 8s (to 30).
 
     Returns a per-row summary, links, costs, and (live) the count of cells updated.
