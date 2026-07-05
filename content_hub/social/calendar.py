@@ -101,6 +101,59 @@ _HEADER_ALIASES = {
 LINK_FONT_COLOR = "0563C1"  # Excel's default hyperlink blue
 
 
+# --- new-calendar shell -----------------------------------------------------
+# The full column set the team works in (matches the living calendar's layout).
+# The reader locates columns by header name, so this ordering is the human-friendly
+# default Cowork starts from, not a hard contract.
+SHELL_HEADERS = [
+    "Row ID", "Date", "Day", "Time (ET)", "Platform", "Content Pillar", "Format",
+    "Slides", "Hook / Headline", "Caption (full copy)", "First-comment Hashtags (IG)",
+    "Visual Type", "Visual Direction / Prompt(s)", "AI Model", "Est. Cost (USD)",
+    "Generated Asset Link (Drive)", "Link (blog slug if amplifying)", "Attribution",
+    "Status", "Your Notes", "Revision (Claude)",
+]
+SHELL_COL_WIDTHS = [14, 6, 10, 26, 22, 14, 28, 10, 30, 18, 50, 26, 24, 16, 30, 13,
+                    8.71, 13, 13, 13, 13]
+HEADER_FILL = "FF1B3A2D"          # deep forest green (opaque ARGB)
+HEADER_FONT_COLOR = "FFF7F2E8"    # ivory
+HEADER_BORDER_COLOR = "FF7B9E87"  # sage
+DEFAULT_TAB_TITLE = "Calendar"  # kept generic — the id may be a range or single day
+
+
+def build_shell_workbook(tab_title: str = DEFAULT_TAB_TITLE):
+    """A header-only calendar workbook matching the team's column layout, styled to
+    match the living calendar (deep-green header, ivory bold text, sage borders, a
+    frozen header row). Cowork fills the Draft rows in; the reader locates columns by
+    header name, so the exact ordering here is a convenience, not a contract."""
+    import openpyxl
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = tab_title or DEFAULT_TAB_TITLE
+    fill = PatternFill("solid", fgColor=HEADER_FILL)
+    font = Font(name="Calibri", size=11, bold=True, color=HEADER_FONT_COLOR)
+    side = Side(style="thin", color=HEADER_BORDER_COLOR)
+    border = Border(left=side, right=side, top=side, bottom=side)
+    align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for i, (head, width) in enumerate(zip(SHELL_HEADERS, SHELL_COL_WIDTHS), start=1):
+        cell = ws.cell(1, i, head)
+        cell.fill, cell.font, cell.border, cell.alignment = fill, font, border, align
+        ws.column_dimensions[get_column_letter(i)].width = width
+    ws.row_dimensions[1].height = 46.25
+    ws.freeze_panes = "A2"
+    return wb
+
+
+def new_shell_bytes(tab_title: str = DEFAULT_TAB_TITLE) -> bytes:
+    """The shell workbook as .xlsx bytes (for uploading as a Google Sheet and/or
+    writing a local working copy)."""
+    import io
+    buf = io.BytesIO()
+    build_shell_workbook(tab_title).save(buf)
+    return buf.getvalue()
+
+
 def _norm(s) -> str:
     return " ".join(str(s or "").strip().lower().split())
 

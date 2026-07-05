@@ -22,14 +22,14 @@ def calendar_dir() -> Path:
 
 
 def social_calendar_root_id() -> str | None:
-    """Drive folder id of the evergreen 'Social Calendar' root (holds the quarters)."""
+    """Drive folder id of the evergreen 'Social Calendar' root (holds the calendars)."""
     return os.environ.get("SOCIAL_CALENDAR_ROOT_ID")
 
 
 def social_calendar_mock_root_id() -> str | None:
     """Optional Drive folder id used as the root for --mock rehearsal uploads, so
-    placeholder files never land in (or overwrite) the production quarter folders.
-    If unset, mock uploads go to a '_mock rehearsal' subfolder under the quarter."""
+    placeholder files never land in (or overwrite) the production calendar folders.
+    If unset, mock uploads go to a '_mock rehearsal' subfolder under the calendar folder."""
     return os.environ.get("SOCIAL_CALENDAR_MOCK_ROOT_ID")
 
 
@@ -54,21 +54,11 @@ def parse_calendar_filename(name: str) -> tuple[str, int] | None:
     return m.group("id"), int(m.group("v"))
 
 
-# Q3_2026 / q3-2026 / Q3 2026  ->  "Q3 2026" (the quarter subfolder under the root)
-_QUARTER_RE = re.compile(r"^Q([1-4])[ _-]?(\d{4})$", re.IGNORECASE)
-
-
-def quarter_folder_for(calendar_id: str) -> str | None:
-    """Derive the Drive quarter subfolder name from a Calendar ID.
-
-    Handles the quarter form (``Q3_2026`` -> ``Q3 2026``). A Calendar ID that is
-    a month or a date range can't be resolved to a quarter unambiguously; those
-    callers must pass an explicit quarter_folder override.
-    """
-    m = _QUARTER_RE.match(calendar_id.strip())
-    if m:
-        return f"Q{m.group(1)} {m.group(2)}"
-    return None
+def calendar_folder(calendar_id: str) -> str:
+    """The Drive subfolder (under the Social Calendar root) that holds this calendar.
+    The folder is named by the Calendar ID verbatim — a quarter (``Q3_2026``), a date
+    range, or a single day are all just folder names, with no derivation."""
+    return calendar_id.strip()
 
 
 # --- Drive asset structure (Ghedee Social Drive asset-structure doc) --------

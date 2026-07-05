@@ -10,6 +10,7 @@ in place. The tools:
 
 | Tool | What it does |
 |---|---|
+| `social_create_calendar` | Start a new calendar: create the Drive folder tree (folder named by the Calendar ID) + an empty, styled living-sheet shell in `00_Calendar & Docs`, and return a local `Ghedee_Social_Calendar_<id>_v1.xlsx` for Cowork to fill in. |
 | `social_generate_media` | Read the live sheet's Draft rows → generate the missing AI images/videos → upload to Drive → write each link / cost / model / notes back **into the live sheet in place** (Sheets API — no download/re-upload). |
 | `social_upload_calendar` | Create the living Google Sheet from a local `Ghedee_Social_Calendar_<id>_v<version>.xlsx` (`--replace` to overwrite). |
 | `social_download_calendar` | Export the living sheet to a local `.xlsx` so Cowork can ingest current edits. |
@@ -33,7 +34,7 @@ content_hub/
     media.py              generate images + video (the AI-image primitive)
     drive.py              push to a Drive folder / pull latest / exists-check
   social/                 ← workflow #1 (blog/ and email/ become siblings)
-    rules.py              calendar naming, quarter→folder, aspect-ratio, Drive layout
+    rules.py              calendar naming, id→folder, aspect-ratio, Drive layout
     calendar.py           read the .xlsx → jobs; write Drive link + cost back
     workflow.py           orchestrator: generate → push → writeback (the 3 operations)
   cli.py                  manual dry/mock/live test harness for the same 3 operations
@@ -75,7 +76,7 @@ regeneration.**
 | `live` | yes | **spends** | real generation + upload + write-back to the working sheet |
 
 Mock uploads go to `SOCIAL_CALENDAR_MOCK_ROOT_ID` if set, else a `_mock rehearsal`
-subfolder under the quarter — so a rehearsal can never overwrite a real asset.
+subfolder under the calendar folder — so a rehearsal can never overwrite a real asset.
 
 ## Setup
 
@@ -100,6 +101,11 @@ After that every headless run (server, `mock`, `live`) reuses `token.json`.
 ## The calendar lifecycle
 
 ```bash
+# 0. Start a brand-new calendar: Drive folders + an empty living-sheet shell, and a
+#    local shell .xlsx to fill in. The Calendar ID is the Drive folder name verbatim
+#    (a quarter, a date range, or a single day):
+python -m content_hub.cli social create Q3_2026        # -> Ghedee_Social_Calendar_Q3_2026_v1.xlsx
+
 # 1. Seed the living Google Sheet from a local Cowork draft (one-time):
 python -m content_hub.cli social upload Q3_2026 8       # ..._v8.xlsx -> living sheet
 
@@ -116,7 +122,6 @@ python -m content_hub.cli social download Q3_2026      # -> Ghedee_Social_Calend
 python -m content_hub.cli social snapshot Q3_2026      # -> next _v<N>.xlsx on Drive
 
 # generate options: --only image|video   --video-model <id>   --video-duration 30
-# common option:    --quarter-folder "Q3 2026"  (when the Calendar ID isn't a quarter)
 ```
 
 `generate` reads the **living Google Sheet** and, in `live` mode, writes only the

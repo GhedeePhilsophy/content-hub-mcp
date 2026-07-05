@@ -37,7 +37,6 @@ def _emit(msg: str, *, err: bool = False) -> None:
 @mcp.tool()
 def social_generate_media(calendar_id: str, mode: str = "dry-run",
                           only: str | None = None,
-                          quarter_folder: str | None = None,
                           image_model: str | None = None,
                           video_model: str | None = None,
                           video_duration: int | None = None) -> dict:
@@ -56,7 +55,6 @@ def social_generate_media(calendar_id: str, mode: str = "dry-run",
         mode: 'dry-run' (plan + cost only, sheet untouched), 'mock' (safe rehearsal to a
             mock Drive dest + a local *.mock.xlsx), or 'live' (writes the live sheet).
         only: optionally limit to 'image' or 'video'.
-        quarter_folder: override the derived Drive quarter folder (e.g. 'Q3 2026').
         video_model / image_model: override the model for this run only (e.g.
             'veo-3.1-fast-generate-preview'); the model actually used is written to the sheet.
         video_duration: target video length in seconds; Veo chains extensions past 8s (to 30).
@@ -64,14 +62,34 @@ def social_generate_media(calendar_id: str, mode: str = "dry-run",
     Returns a per-row summary, links, costs, and (live) the count of cells updated.
     """
     return social.generate_media(calendar_id, mode=mode, only=only,
-                                 quarter_folder=quarter_folder, image_model=image_model,
-                                 video_model=video_model, video_duration=video_duration,
-                                 emit=_emit)
+                                 image_model=image_model, video_model=video_model,
+                                 video_duration=video_duration, emit=_emit)
+
+
+@mcp.tool()
+def social_create_calendar(calendar_id: str, replace: bool = False) -> dict:
+    """Initialise a brand-new Social Calendar (call this to START a new calendar). Creates
+    the Google Drive folder tree (the calendar folder + 00_Calendar & Docs, 02_AI Visuals/
+    Images + /Video, 03_Carousels), creates the LIVING Google Sheet as an empty, styled
+    header-only shell in 00_Calendar & Docs, and returns a local shell .xlsx
+    (Ghedee_Social_Calendar_<id>_v1.xlsx) for Cowork to ingest and fill in.
+
+    calendar_id may be a quarter (e.g. 'Q3_2026'), a date range, or a single day — it is NOT
+    required to be a quarter. Whatever it is, it becomes the Drive folder name verbatim.
+
+    Args:
+        calendar_id: the new calendar's id (a quarter, a date range, or a single day); this
+            is used verbatim as the Drive folder name.
+        replace: recreate an empty shell even if a live sheet already exists (trashes the old).
+
+    Returns the folder name, the living sheet name/id/link, and the local shell .xlsx path.
+    """
+    from content_hub.social import sheet_ops
+    return sheet_ops.create(calendar_id, replace=replace, emit=_emit)
 
 
 @mcp.tool()
 def social_upload_calendar(calendar_id: str, version: int,
-                           quarter_folder: str | None = None,
                            replace: bool = False) -> dict:
     """Create the LIVING Google Sheet (Ghedee_Social_Calendar_<id>) from a local
     Ghedee_Social_Calendar_<id>_v<version>.xlsx in 00_Calendar & Docs. The living sheet
@@ -81,17 +99,14 @@ def social_upload_calendar(calendar_id: str, version: int,
     Args:
         calendar_id: e.g. 'Q3_2026'.
         version: the local draft version number to create the sheet from, e.g. 8.
-        quarter_folder: override the derived quarter folder when needed.
         replace: overwrite an existing live sheet from this .xlsx.
     """
     from content_hub.social import sheet_ops
-    return sheet_ops.upload(calendar_id, version, quarter_folder=quarter_folder,
-                            replace=replace, emit=_emit)
+    return sheet_ops.upload(calendar_id, version, replace=replace, emit=_emit)
 
 
 @mcp.tool()
 def social_build_preview(calendar_id: str, version: int | None = None,
-                         quarter_folder: str | None = None,
                          no_cache: bool = False, publish: bool = True) -> dict:
     """Build a self-contained HTML review page of a Social Calendar's posts, each
     rendered as a mockup in its platform's chrome (Instagram / Facebook / TikTok),
@@ -104,39 +119,36 @@ def social_build_preview(calendar_id: str, version: int | None = None,
     Args:
         calendar_id: e.g. 'Q3_2026'.
         version: a snapshot version (e.g. 8); omit to read the live sheet.
-        quarter_folder: override the derived quarter folder on Drive.
         no_cache: re-download and re-encode every asset, ignoring the thumbnail cache.
         publish: also upload the HTML next to the calendar on Drive (default True).
 
     Returns the output path, the Drive link, and post/week/image counts.
     """
     from content_hub.social import preview
-    return preview.build_preview(calendar_id, version, quarter_folder=quarter_folder,
+    return preview.build_preview(calendar_id, version,
                                  no_cache=no_cache, publish=publish, emit=_emit)
 
 
 @mcp.tool()
-def social_snapshot_calendar(calendar_id: str, quarter_folder: str | None = None) -> dict:
+def social_snapshot_calendar(calendar_id: str) -> dict:
     """Export the living Google Sheet to the next versioned .xlsx snapshot
     (Ghedee_Social_Calendar_<id>_v<N>.xlsx) in 00_Calendar & Docs — a frozen
     approval-round record. Returns the new version, filename, and Drive link.
     """
     from content_hub.social import sheet_ops
-    return sheet_ops.snapshot(calendar_id, quarter_folder=quarter_folder, emit=_emit)
+    return sheet_ops.snapshot(calendar_id, emit=_emit)
 
 
 @mcp.tool()
-def social_download_calendar(calendar_id: str,
-                             quarter_folder: str | None = None) -> dict:
+def social_download_calendar(calendar_id: str) -> dict:
     """Export the living Google Sheet to a local .xlsx (Ghedee_Social_Calendar_<id>.xlsx)
     in the Content Hub working folder, so Cowork can ingest the current edits and notes.
 
     Args:
         calendar_id: e.g. 'Q3_2026'.
-        quarter_folder: override the derived quarter folder when needed.
     """
     from content_hub.social import sheet_ops
-    return sheet_ops.download(calendar_id, quarter_folder=quarter_folder, emit=_emit)
+    return sheet_ops.download(calendar_id, emit=_emit)
 
 
 if __name__ == "__main__":

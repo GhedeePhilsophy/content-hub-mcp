@@ -40,25 +40,21 @@ def _drive_client(interactive: bool = False):
                        allow_interactive=interactive)
 
 
-def _resolve_base_folder(drive, calendar_id: str, mode: str,
-                         quarter_folder: str | None) -> tuple[str, str]:
-    """Return (base_folder_id, quarter_name). For live this is the quarter folder
+def _resolve_base_folder(drive, calendar_id: str, mode: str) -> tuple[str, str]:
+    """Return (base_folder_id, folder_name). For live this is the calendar's folder
     under the Social Calendar root; for mock it's a sandbox that mirrors it."""
     root = rules.social_calendar_root_id()
     if not root:
         raise RuntimeError("SOCIAL_CALENDAR_ROOT_ID is not set — point it at the "
                            "'Social Calendar' Drive folder id.")
-    quarter = quarter_folder or rules.quarter_folder_for(calendar_id)
-    if not quarter:
-        raise RuntimeError(f"Could not derive a quarter folder from calendar_id "
-                           f"{calendar_id!r}; pass quarter_folder explicitly.")
+    folder = rules.calendar_folder(calendar_id)
     if mode == "mock":
         mock_root = rules.social_calendar_mock_root_id()
         if mock_root:
-            return drive.ensure_path(mock_root, [quarter]), quarter
-        quarter_id = drive.find_or_create_folder(quarter, root)
-        return drive.ensure_path(quarter_id, [MOCK_SUBFOLDER]), quarter
-    return drive.find_or_create_folder(quarter, root), quarter
+            return drive.ensure_path(mock_root, [folder]), folder
+        folder_id = drive.find_or_create_folder(folder, root)
+        return drive.ensure_path(folder_id, [MOCK_SUBFOLDER]), folder
+    return drive.find_or_create_folder(folder, root), folder
 
 
 def _kind_parent(drive, base_folder: str, job) -> str:
@@ -126,7 +122,7 @@ class _SheetWriter:
 
 # --- operations ------------------------------------------------------------
 def generate_media(calendar_id: str, mode: str = "dry-run", *,
-                   only: str | None = None, quarter_folder: str | None = None,
+                   only: str | None = None,
                    image_model: str | None = None, video_model: str | None = None,
                    video_duration: int | None = None, emit=None) -> dict:
     """Generate the missing AI visuals for the living calendar's Draft rows, upload them,
@@ -145,7 +141,7 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
     # The calendar is the living Google Sheet, exported to .xlsx bytes for reading.
     from . import sheet_ops
     drive = _drive_client(interactive=False)
-    docs = sheet_ops._docs_folder(drive, calendar_id, quarter_folder)
+    docs = sheet_ops._docs_folder(drive, calendar_id)
     live = sheet_ops.find_live_sheet(drive, docs, calendar_id)
     if not live:
         raise FileNotFoundError(
@@ -201,8 +197,8 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
         return result
 
     # --- mock / live: Drive-backed -------------------------------------------
-    base_folder, quarter = _resolve_base_folder(drive, calendar_id, mode, quarter_folder)
-    result["quarter_folder"] = quarter
+    base_folder, folder = _resolve_base_folder(drive, calendar_id, mode)
+    result["folder"] = folder
     client = types = None
     if mode == "live":
         client, types = media.init_live_client()
