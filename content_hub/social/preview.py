@@ -344,11 +344,19 @@ def _avatar(cls: str = "") -> str:
     return f'<span class="avatar {cls}">W</span>'
 
 
+def _status_kind(status: str) -> str:
+    """Spreadsheet Status -> color kind: Draft=yellow, Approved=green, else red."""
+    s = (status or "").strip().lower()
+    if s == "draft":
+        return "draft"
+    if s == "approved":
+        return "ok"
+    return "other"
+
+
 def _status_pill(status: str) -> str:
-    s = (status or "").lower()
-    cls = "draft" if s == "draft" else "ok" if s in ("approved", "scheduled") else \
-        "fail" if s == "failed" else "muted"
-    return f'<span class="pill {cls}">{_esc(status or "—")}</span>'
+    label = _esc(status.strip()) if status and status.strip() else "—"
+    return f'<span class="pill {_status_kind(status)}">{label}</span>'
 
 
 def _card(job, assets: dict, cache=None) -> str:
@@ -430,7 +438,8 @@ def _grid_cell(job, assets: dict, cache=None) -> str:
         inner = f'<div class="gph gph-fail">{SVG["warn"]}</div>'
     else:
         inner = '<div class="gph gph-none"></div>'
-    return (f'<div class="gcell" title="{_esc(job.row_id)} · {_esc(job.hook)}">'
+    return (f'<div class="gcell st-{_status_kind(job.status)}" '
+            f'title="{_esc(job.row_id)} · {_esc(job.status)} · {_esc(job.hook)}">'
             f'{inner}{corner}</div>')
 
 
@@ -579,10 +588,13 @@ header.top .sub{color:var(--muted);font-size:13px;text-transform:uppercase;lette
 .meta .dot{opacity:.5}
 .pill{margin-left:auto;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
   padding:2px 8px;border-radius:999px}
-.pill.draft{background:rgba(198,154,82,.18);color:#8a6a24}
-.pill.ok{background:rgba(147,160,132,.22);color:#4f6448}
-.pill.fail{background:rgba(176,82,74,.16);color:#9a3f38}
-.pill.muted{background:var(--line);color:var(--muted)}
+/* status colors: Draft=yellow, Approved=green, anything else=red */
+.pill.draft{background:rgba(217,163,32,.18);color:#9a6f10}
+.pill.ok{background:rgba(78,140,90,.20);color:#2f6b3c}
+.pill.other{background:rgba(194,74,62,.16);color:#a53a30}
+:root[data-theme="dark"] .pill.draft,@media(prefers-color-scheme:dark){.pill.draft{color:#e6b84a}}
+:root[data-theme="dark"] .pill.ok,@media(prefers-color-scheme:dark){.pill.ok{color:#7fc08d}}
+:root[data-theme="dark"] .pill.other,@media(prefers-color-scheme:dark){.pill.other{color:#e08a7e}}
 /* avatar monogram */
 .avatar{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;
   overflow:hidden;background:radial-gradient(circle at 30% 25%,#2c4a38,#17281E);
@@ -681,6 +693,13 @@ a.ph-icon.play{text-decoration:none;cursor:pointer}
 #grid .pbio{font-size:13.5px;color:var(--ink);line-height:1.5;max-width:52ch}
 .iggrid{max-width:820px;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:3px}
 .gcell{position:relative;aspect-ratio:1;overflow:hidden;background:#0d0d0d}
+/* status frame around each grid item (Draft=yellow, Approved=green, else red),
+   drawn as an overlay so it sits ON TOP of the thumbnail */
+.gcell::after{content:"";position:absolute;inset:0;pointer-events:none;
+  border:3px solid transparent;z-index:3}
+.gcell.st-draft::after{border-color:#D9A320}
+.gcell.st-ok::after{border-color:#4E8C5A}
+.gcell.st-other::after{border-color:#C24A3E}
 .gcell img{width:100%;height:100%;object-fit:cover;display:block}
 .gcorner{position:absolute;top:6px;right:6px;width:19px;height:19px;color:#fff;
   filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
