@@ -67,12 +67,13 @@ def social_generate_media(calendar_id: str, mode: str = "dry-run",
 
 
 @mcp.tool()
-def social_create_calendar(calendar_id: str, replace: bool = False) -> dict:
+def social_create_calendar(calendar_id: str, dest_dir: str,
+                           replace: bool = False) -> dict:
     """Initialise a brand-new Social Calendar (call this to START a new calendar). Creates
     the Google Drive folder tree (the calendar folder + 00_Calendar & Docs, 02_AI Visuals/
     Images + /Video, 03_Carousels), creates the LIVING Google Sheet as an empty, styled
-    header-only shell in 00_Calendar & Docs, and returns a local shell .xlsx
-    (Ghedee_Social_Calendar_<id>_v1.xlsx) for Cowork to ingest and fill in.
+    header-only shell in 00_Calendar & Docs, and writes a local shell .xlsx
+    (Ghedee_Social_Calendar_<id>_v1.xlsx) into dest_dir for Cowork to fill in.
 
     calendar_id may be a quarter (e.g. 'Q3_2026'), a date range, or a single day — it is NOT
     required to be a quarter. Whatever it is, it becomes the Drive folder name verbatim.
@@ -80,29 +81,34 @@ def social_create_calendar(calendar_id: str, replace: bool = False) -> dict:
     Args:
         calendar_id: the new calendar's id (a quarter, a date range, or a single day); this
             is used verbatim as the Drive folder name.
+        dest_dir: REQUIRED — the absolute path to your (Cowork's) working directory where the
+            shell .xlsx should be written. The server can't reach into your sandbox, so pass
+            the folder you want the file in.
         replace: recreate an empty shell even if a live sheet already exists (trashes the old).
 
     Returns the folder name, the living sheet name/id/link, and the local shell .xlsx path.
     """
     from content_hub.social import sheet_ops
-    return sheet_ops.create(calendar_id, replace=replace, emit=_emit)
+    return sheet_ops.create(calendar_id, dest_dir, replace=replace, emit=_emit)
 
 
 @mcp.tool()
-def social_upload_calendar(calendar_id: str, version: int,
+def social_upload_calendar(calendar_id: str, source_path: str,
                            replace: bool = False) -> dict:
-    """Create the LIVING Google Sheet (Ghedee_Social_Calendar_<id>) from a local
-    Ghedee_Social_Calendar_<id>_v<version>.xlsx in 00_Calendar & Docs. The living sheet
-    is the canonical calendar the team edits in place. Fails if it already exists unless
-    replace=True (which trashes the old one and recreates it from this .xlsx).
+    """Create the LIVING Google Sheet (Ghedee_Social_Calendar_<id>) in 00_Calendar & Docs
+    from a local .xlsx at source_path. The living sheet is the canonical calendar the team
+    edits in place. Fails if it already exists unless replace=True (which trashes the old
+    one and recreates it from this .xlsx).
 
     Args:
         calendar_id: e.g. 'Q3_2026'.
-        version: the local draft version number to create the sheet from, e.g. 8.
+        source_path: REQUIRED — the absolute path to the .xlsx to upload (in your/Cowork's
+            working directory). The local filename can be anything; the living sheet is
+            always named Ghedee_Social_Calendar_<id>.
         replace: overwrite an existing live sheet from this .xlsx.
     """
     from content_hub.social import sheet_ops
-    return sheet_ops.upload(calendar_id, version, replace=replace, emit=_emit)
+    return sheet_ops.upload(calendar_id, source_path, replace=replace, emit=_emit)
 
 
 @mcp.tool()
@@ -140,15 +146,18 @@ def social_snapshot_calendar(calendar_id: str) -> dict:
 
 
 @mcp.tool()
-def social_download_calendar(calendar_id: str) -> dict:
+def social_download_calendar(calendar_id: str, dest_dir: str) -> dict:
     """Export the living Google Sheet to a local .xlsx (Ghedee_Social_Calendar_<id>.xlsx)
-    in the Content Hub working folder, so Cowork can ingest the current edits and notes.
+    in dest_dir, so Cowork can ingest the current edits and notes.
 
     Args:
         calendar_id: e.g. 'Q3_2026'.
+        dest_dir: REQUIRED — the absolute path to your (Cowork's) working directory where the
+            .xlsx should be written. The server can't reach into your sandbox, so pass the
+            folder you want the file in.
     """
     from content_hub.social import sheet_ops
-    return sheet_ops.download(calendar_id, emit=_emit)
+    return sheet_ops.download(calendar_id, dest_dir, emit=_emit)
 
 
 if __name__ == "__main__":

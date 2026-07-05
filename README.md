@@ -10,10 +10,10 @@ in place. The tools:
 
 | Tool | What it does |
 |---|---|
-| `social_create_calendar` | Start a new calendar: create the Drive folder tree (folder named by the Calendar ID) + an empty, styled living-sheet shell in `00_Calendar & Docs`, and return a local `Ghedee_Social_Calendar_<id>_v1.xlsx` for Cowork to fill in. |
+| `social_create_calendar` | Start a new calendar: create the Drive folder tree (folder named by the Calendar ID) + an empty, styled living-sheet shell in `00_Calendar & Docs`, and write a local `Ghedee_Social_Calendar_<id>_v1.xlsx` into the caller's `dest_dir` for Cowork to fill in. |
 | `social_generate_media` | Read the live sheet's Draft rows → generate the missing AI images/videos → upload to Drive → write each link / cost / model / notes back **into the live sheet in place** (Sheets API — no download/re-upload). |
-| `social_upload_calendar` | Create the living Google Sheet from a local `Ghedee_Social_Calendar_<id>_v<version>.xlsx` (`--replace` to overwrite). |
-| `social_download_calendar` | Export the living sheet to a local `.xlsx` so Cowork can ingest current edits. |
+| `social_upload_calendar` | Create the living Google Sheet from a local `.xlsx` at `source_path` (`--replace` to overwrite). |
+| `social_download_calendar` | Export the living sheet to a local `.xlsx` in the caller's `dest_dir` so Cowork can ingest current edits. |
 | `social_snapshot_calendar` | Export the living sheet to the next `_v<N>.xlsx` on Drive (a frozen approval-round record). |
 | `social_build_preview` | Build an HTML review page from the live sheet and publish it next to the calendar as `Ghedee_Social_Calendar_<id>_preview.html`. |
 
@@ -103,11 +103,11 @@ After that every headless run (server, `mock`, `live`) reuses `token.json`.
 ```bash
 # 0. Start a brand-new calendar: Drive folders + an empty living-sheet shell, and a
 #    local shell .xlsx to fill in. The Calendar ID is the Drive folder name verbatim
-#    (a quarter, a date range, or a single day):
-python -m content_hub.cli social create Q3_2026        # -> Ghedee_Social_Calendar_Q3_2026_v1.xlsx
+#    (a quarter, a date range, or a single day). --out is where the shell is written:
+python -m content_hub.cli social create Q3_2026 --out ./work   # -> ./work/Ghedee_Social_Calendar_Q3_2026_v1.xlsx
 
-# 1. Seed the living Google Sheet from a local Cowork draft (one-time):
-python -m content_hub.cli social upload Q3_2026 8       # ..._v8.xlsx -> living sheet
+# 1. Seed the living Google Sheet from a local Cowork draft (one-time), by file path:
+python -m content_hub.cli social upload Q3_2026 ./work/Ghedee_Social_Calendar_Q3_2026_v1.xlsx
 
 # 2. Generate media and write links/cost/model/notes back INTO the live sheet:
 python -m content_hub.cli social generate Q3_2026 --mode dry-run   # plan + cost only
@@ -118,8 +118,8 @@ python -m content_hub.cli social generate Q3_2026 --mode live      # spends; edi
 python -m content_hub.cli social preview Q3_2026
 
 # 4. Pull the live sheet down for Cowork, or freeze a versioned snapshot:
-python -m content_hub.cli social download Q3_2026      # -> Ghedee_Social_Calendar_Q3_2026.xlsx
-python -m content_hub.cli social snapshot Q3_2026      # -> next _v<N>.xlsx on Drive
+python -m content_hub.cli social download Q3_2026 --out ./work   # -> ./work/Ghedee_Social_Calendar_Q3_2026.xlsx
+python -m content_hub.cli social snapshot Q3_2026               # -> next _v<N>.xlsx on Drive
 
 # generate options: --only image|video   --video-model <id>   --video-duration 30
 ```

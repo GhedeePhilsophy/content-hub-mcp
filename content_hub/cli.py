@@ -8,11 +8,12 @@ are namespaced by workflow — ``<workflow> <operation>`` here mirrors the
 blog and email register the same way later.
 
   python -m content_hub.cli auth                                    # one-time Drive consent
-  python -m content_hub.cli social generate Q3_2026 6 --mode dry-run
-  python -m content_hub.cli social generate Q3_2026 6 --mode mock
-  python -m content_hub.cli social generate Q3_2026 6 --mode live
-  python -m content_hub.cli social upload   Q3_2026 6 --mode live
-  python -m content_hub.cli social download Q3_2026
+  python -m content_hub.cli social create   Q3_2026 --out ./work
+  python -m content_hub.cli social generate Q3_2026 --mode dry-run
+  python -m content_hub.cli social generate Q3_2026 --mode mock
+  python -m content_hub.cli social generate Q3_2026 --mode live
+  python -m content_hub.cli social upload   Q3_2026 ./work/Ghedee_Social_Calendar_Q3_2026_v1.xlsx
+  python -m content_hub.cli social download Q3_2026 --out ./work
 
 Modes:
   dry-run  plan only. No Drive, no API, nothing written.
@@ -29,7 +30,7 @@ import sys
 
 from .core import config
 from . import social
-from .social import preview, sheet_ops
+from .social import preview, sheet_ops, rules
 
 
 def _print_result(res: dict) -> None:
@@ -81,21 +82,22 @@ def _register_social(workflows) -> None:
     c.add_argument("--replace", action="store_true",
                    help="Recreate an empty shell even if a live sheet exists (trashes the old).")
     c.set_defaults(func=lambda a: sheet_ops.create(
-        a.calendar_id, dest_dir=a.out, replace=a.replace))
+        a.calendar_id, a.out or str(rules.calendar_dir()), replace=a.replace))
 
     u = ops.add_parser("upload", help="Create the living Google Sheet from a local .xlsx.")
     u.add_argument("calendar_id")
-    u.add_argument("version", type=int)
+    u.add_argument("source_path", help="Path to the local .xlsx to upload.")
     u.add_argument("--replace", action="store_true",
                    help="Overwrite an existing live sheet from this .xlsx (trashes the old).")
     u.set_defaults(func=lambda a: sheet_ops.upload(
-        a.calendar_id, a.version, replace=a.replace))
+        a.calendar_id, a.source_path, replace=a.replace))
 
     d = ops.add_parser("download", help="Export the living Google Sheet to a local .xlsx "
                        "for Cowork to ingest.")
     d.add_argument("calendar_id")
     d.add_argument("--out", help="Destination directory (default: the calendar dir).")
-    d.set_defaults(func=lambda a: sheet_ops.download(a.calendar_id, dest_dir=a.out))
+    d.set_defaults(func=lambda a: sheet_ops.download(
+        a.calendar_id, a.out or str(rules.calendar_dir())))
 
     p2 = ops.add_parser("preview", help="Build a self-contained HTML review page of the posts.")
     p2.add_argument("calendar_id")
