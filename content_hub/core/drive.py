@@ -193,4 +193,5 @@ class DriveClient:
 
     def list_children(self, parent_id: str) -> list[dict]:
         q = f"trashed=false and '{parent_id}' in parents"
-        return self._list(q, fields="files(id,name,mimeType,md5Checksum,modifiedTime,size)")
+        return self._list(
+            q, fields="files(id,name,mimeType,md5Checksum,modifiedTime,size,webViewLink)")

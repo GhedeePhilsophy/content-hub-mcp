@@ -197,9 +197,9 @@ class _DriveSource:
         fid = self.drive.find_folder_path(base, subpath) if base else None
         return self.drive.list_children(fid) if fid else []
 
-    def fetch_calendar(self, version: int | None) -> tuple[int, bytes]:
+    def fetch_calendar(self, version: int | None) -> tuple[int, bytes, str | None]:
         """Download the calendar .xlsx from 00_Calendar & Docs — the given version, or
-        the latest if version is None. Returns (version, bytes)."""
+        the latest if version is None. Returns (version, bytes, drive_view_link)."""
         if not self.docs:
             raise FileNotFoundError(f"{rules.SUBFOLDER_DOCS} not found on Drive.")
         best = None  # (version, file)
@@ -215,7 +215,7 @@ class _DriveSource:
             raise FileNotFoundError(
                 f"no {rules.CALENDAR_PREFIX}_{self.calendar_id}_{want}.xlsx in "
                 f"{rules.SUBFOLDER_DOCS} on Drive.")
-        return best[0], self.drive.download_bytes(best[1]["id"])
+        return best[0], self.drive.download_bytes(best[1]["id"]), best[1].get("webViewLink")
 
     def assets_for(self, row_id: str) -> dict:
         pre = f"{row_id}_"
@@ -273,6 +273,9 @@ SVG = {
     "globe": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>',
     "warn": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 2 20h20L12 3z"/><path d="M12 9v5M12 17.5v.5"/></svg>',
     "stack": '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 3h11a2 2 0 0 1 2 2v11h-2V5H8V3z"/><rect x="3" y="7" width="13" height="13" rx="2"/></svg>',
+    "copy": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M6 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v2"/></svg>',
+    "sheet": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>',
+    "ext": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg>',
     "reel": '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm6 4v8l6-4-6-4z"/></svg>',
 }
 
@@ -355,11 +358,12 @@ def _status_kind(status: str) -> str:
 
 
 def _status_pill(status: str) -> str:
+    # color comes from the parent card's st-{kind} custom properties
     label = _esc(status.strip()) if status and status.strip() else "—"
-    return f'<span class="pill {_status_kind(status)}">{label}</span>'
+    return f'<span class="pill">{label}</span>'
 
 
-def _card(job, assets: dict, cache=None) -> str:
+def _card(job, assets: dict, cache=None, sheet_link: str | None = None) -> str:
     key = _platform_key(job.platform)
     handle = _handle(job.platform, key)
     link = job.existing_link if isinstance(job.existing_link, str) \
@@ -376,10 +380,6 @@ def _card(job, assets: dict, cache=None) -> str:
             if ln.strip().startswith("[auto]"):
                 reason = ln.strip()[len("[auto]"):].strip()
                 break
-    meta = (f'<div class="meta"><span class="rid">{_esc(job.row_id)}</span>'
-            f'<span class="dot">·</span>{_esc(_fmt_day(job.date, job.day))}'
-            f'<span class="dot">·</span>{_esc(job.fmt or "")}{_status_pill(job.status)}</div>')
-
     if key == "facebook":
         body = (
             f'<div class="fb-head">{_avatar()}<div><div class="fb-name">'
@@ -410,9 +410,33 @@ def _card(job, assets: dict, cache=None) -> str:
             f'{_caption_block(handle, job.caption)}'
             f'{_hashtags_block(job.hashtags, "First comment:")}')
 
-    hook = f'<div class="hook">{_esc(job.hook)}</div>' if job.hook else ""
-    return (f'<article class="card {key}" data-platform="{key}">{hook}'
-            f'<div class="frame">{body}</div>{meta}</article>')
+    kind = _status_kind(job.status)
+    asset_link = job.existing_link if isinstance(job.existing_link, str) \
+        and job.existing_link.startswith("http") else None
+    actions = []
+    if job.caption:
+        actions.append(f'<button class="act" data-copy="{_esc(job.caption)}">'
+                       f'{SVG["copy"]} Caption</button>')
+    if job.hashtags:
+        actions.append(f'<button class="act" data-copy="{_esc(job.hashtags)}">'
+                       f'{SVG["copy"]} Tags</button>')
+    if sheet_link:
+        actions.append(f'<a class="act" href="{_esc(sheet_link)}" target="_blank" '
+                       f'rel="noopener">{SVG["sheet"]} Sheet</a>')
+    if asset_link:
+        actions.append(f'<a class="act" href="{_esc(asset_link)}" target="_blank" '
+                       f'rel="noopener">{SVG["ext"]} Asset</a>')
+    actions_html = f'<div class="card-actions">{"".join(actions)}</div>' if actions else ""
+    head = (
+        '<div class="card-head"><div class="chead-row">'
+        f'<span class="rid">{_esc(job.row_id)}</span>'
+        f'<span class="cdate">{_esc(_fmt_day(job.date, job.day))}</span>'
+        + (f'<span class="cfmt">{_esc(job.fmt)}</span>' if job.fmt else "")
+        + _status_pill(job.status) + '</div>'
+        + (f'<div class="chook">{_esc(job.hook)}</div>' if job.hook else "")
+        + actions_html + '</div>')
+    return (f'<article class="card {key} st-{kind}" data-platform="{key}" '
+            f'data-status="{kind}">{head}<div class="frame">{body}</div></article>')
 
 
 def _grid_cell(job, assets: dict, cache=None) -> str:
@@ -438,7 +462,8 @@ def _grid_cell(job, assets: dict, cache=None) -> str:
         inner = f'<div class="gph gph-fail">{SVG["warn"]}</div>'
     else:
         inner = '<div class="gph gph-none"></div>'
-    return (f'<div class="gcell st-{_status_kind(job.status)}" '
+    kind = _status_kind(job.status)
+    return (f'<div class="gcell st-{kind}" data-status="{kind}" '
             f'title="{_esc(job.row_id)} · {_esc(job.status)} · {_esc(job.hook)}">'
             f'{inner}{corner}</div>')
 
@@ -470,7 +495,7 @@ def build_preview(calendar_id: str, version: int | None = None, *,
     client = DriveClient(config.credentials_path(), config.token_path(),
                          allow_interactive=False)
     drive_source = _DriveSource(client, calendar_id, quarter_folder)
-    version, xlsx_bytes = drive_source.fetch_calendar(version)
+    version, xlsx_bytes, sheet_link = drive_source.fetch_calendar(version)
     emit(f"calendar: {rules.calendar_filename(calendar_id, version)} (from Drive)")
 
     def resolve(row_id: str) -> dict:
@@ -480,32 +505,41 @@ def build_preview(calendar_id: str, version: int | None = None, *,
     jobs = [j for j in cal.read_jobs() if j.row_id]
     jobs.sort(key=lambda j: (j.date or "9999", j.platform))
 
-    # group by week
+    # group by week; tally platforms and statuses
     weeks: dict[str, list] = {}
     labels: dict[str, str] = {}
     counts = {"instagram": 0, "facebook": 0, "tiktok": 0}
+    scount = {"draft": 0, "ok": 0, "other": 0}
     n_asset = 0
     for j in jobs:
         key, label = _week_of(j.date)
         weeks.setdefault(key, []).append(j)
         labels[key] = label
         counts[_platform_key(j.platform)] = counts.get(_platform_key(j.platform), 0) + 1
+        scount[_status_kind(j.status)] += 1
 
     sections = []
     grid_cells = []
     for wk in sorted(weeks):
         cards = []
-        for j in weeks[wk]:
+        wposts = weeks[wk]
+        approved = sum(1 for j in wposts if _status_kind(j.status) == "ok")
+        pct = round(100 * approved / len(wposts)) if wposts else 0
+        for j in wposts:
             assets = resolve(j.row_id)
             if assets["kind"] in ("image", "carousel"):
                 n_asset += 1
-            cards.append(_card(j, assets, cache))
+            cards.append(_card(j, assets, cache, sheet_link))
             if _platform_key(j.platform) == "instagram":
                 grid_cells.append(_grid_cell(j, assets, cache))
-        sections.append(f'<section class="week"><h2>{_esc(labels[wk])}</h2>'
+        rollup = (f'<span class="wk-prog"><span class="wk-count">{approved}/{len(wposts)} '
+                  f'approved</span><span class="wk-bar"><i style="width:{pct}%"></i></span></span>')
+        sections.append(f'<section class="week"><h2><span class="wk-label">'
+                        f'{_esc(labels[wk])}</span><span class="wk-rule"></span>{rollup}</h2>'
                         f'<div class="grid">{"".join(cards)}</div></section>')
 
-    emit(f"preview: {len(jobs)} posts across {len(weeks)} weeks, {n_asset} with images")
+    emit(f"preview: {len(jobs)} posts, {scount['ok']} approved / {scount['draft']} draft "
+         f"/ {scount['other']} other")
     chips = ('<div class="chips"><button class="chip active" data-f="all">All '
              f'<b>{len(jobs)}</b></button>'
              f'<button class="chip" data-f="instagram">Instagram <b>{counts["instagram"]}</b></button>'
@@ -513,6 +547,17 @@ def build_preview(calendar_id: str, version: int | None = None, *,
              f'<button class="chip" data-f="tiktok">TikTok <b>{counts["tiktok"]}</b></button>'
              '<span class="chip-sep"></span>'
              f'<button class="chip" data-f="grid">▦ IG Grid <b>{counts["instagram"]}</b></button></div>')
+    status_chips = (
+        '<div class="chips status"><button class="chip active" data-s="all">All statuses '
+        f'<b>{len(jobs)}</b></button>'
+        f'<button class="chip st-draft" data-s="draft"><i class="sdot"></i>Draft '
+        f'<b>{scount["draft"]}</b></button>'
+        f'<button class="chip st-ok" data-s="ok"><i class="sdot"></i>Approved '
+        f'<b>{scount["ok"]}</b></button>'
+        f'<button class="chip st-other" data-s="other"><i class="sdot"></i>Other '
+        f'<b>{scount["other"]}</b></button><span class="chip-sep"></span>'
+        f'<button class="chip needs" data-s="needs">⚠ Needs review '
+        f'<b>{scount["draft"] + scount["other"]}</b></button></div>')
 
     grid_html = (
         '<section id="grid" class="hide"><div class="profile">'
@@ -526,6 +571,7 @@ def build_preview(calendar_id: str, version: int | None = None, *,
 
     doc_title = f"Ghedee Social Calendar — {calendar_id.replace('_', ' ')} · Review v{version}"
     page = _PAGE.replace("{{TITLE}}", _esc(doc_title)).replace("{{CHIPS}}", chips) \
+        .replace("{{STATUS_CHIPS}}", status_chips) \
         .replace("{{SECTIONS}}", "".join(sections)).replace("{{GRID}}", grid_html) \
         .replace("{{AVATAR_CSS}}", avatar_css) \
         .replace("{{SUBTITLE}}", f"{len(jobs)} posts · draft review")
@@ -575,26 +621,53 @@ header.top .sub{color:var(--muted);font-size:13px;text-transform:uppercase;lette
 .chip.active{background:var(--forest);color:var(--ivory);border-color:var(--forest)}
 .chip.active b{color:var(--gold)}
 :root[data-theme="dark"] .chip.active,@media(prefers-color-scheme:dark){.chip.active{background:var(--gold);color:#17281E;border-color:var(--gold)}.chip.active b{color:#17281E}}
+/* status filter chips (second row) */
+.chips.status{margin:-14px 0 26px}
+.chip .sdot{width:10px;height:10px;border-radius:3px;background:var(--sc-bright);display:inline-block}
+.chip.st-draft.active,.chip.st-ok.active,.chip.st-other.active{
+  background:var(--sc-bright);border-color:var(--sc-bright);color:var(--sc-ink)}
+.chip.st-draft.active b,.chip.st-ok.active b,.chip.st-other.active b{color:var(--sc-ink);opacity:.75}
+.chip.needs{border-color:#E3AE17;color:#9a6f10;font-weight:700}
+.chip.needs.active{background:#F5C518;border-color:#F5C518;color:#4a3800}
+.chip.needs.active b{color:#4a3800;opacity:.75}
+/* per-card action buttons */
+.card-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.act{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;
+  color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:7px;
+  padding:4px 9px;cursor:pointer;text-decoration:none;transition:background .12s,border-color .12s,color .12s}
+.act:hover{border-color:var(--accent);color:var(--accent)}
+.act svg{width:13px;height:13px;flex:none}
+.act.copied{background:#1FC24C;border-color:#1FC24C;color:#fff}
 .week{margin:30px 0}
 .week h2{font-family:Georgia,serif;font-weight:600;font-size:17px;margin:0 0 16px;
-  color:var(--ink);display:flex;align-items:center;gap:12px}
-.week h2::after{content:"";flex:1;height:1px;background:var(--line)}
+  color:var(--ink);display:flex;align-items:center;gap:14px}
+.wk-rule{flex:1;height:1px;background:var(--line);min-width:16px}
+.wk-prog{display:inline-flex;align-items:center;gap:10px;
+  font:600 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--muted)}
+.wk-count{white-space:nowrap}
+.wk-bar{width:110px;height:6px;border-radius:99px;background:var(--line);overflow:hidden}
+.wk-bar i{display:block;height:100%;background:#1FC24C;border-radius:99px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:22px;align-items:start}
-.card{display:flex;flex-direction:column;gap:8px}
-.hook{font-family:Georgia,serif;font-size:14px;color:var(--muted);font-style:italic;line-height:1.4}
-.frame{border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.12),0 6px 20px rgba(20,30,22,.06)}
-.meta{display:flex;flex-wrap:wrap;align-items:center;gap:7px;font-size:11.5px;color:var(--muted)}
-.meta .rid{font-weight:700;color:var(--accent);letter-spacing:.02em}
-.meta .dot{opacity:.5}
-.pill{margin-left:auto;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
-  padding:2px 8px;border-radius:999px}
-/* status colors: Draft=yellow, Approved=green, anything else=red */
-.pill.draft{background:rgba(217,163,32,.18);color:#9a6f10}
-.pill.ok{background:rgba(78,140,90,.20);color:#2f6b3c}
-.pill.other{background:rgba(194,74,62,.16);color:#a53a30}
-:root[data-theme="dark"] .pill.draft,@media(prefers-color-scheme:dark){.pill.draft{color:#e6b84a}}
-:root[data-theme="dark"] .pill.ok,@media(prefers-color-scheme:dark){.pill.ok{color:#7fc08d}}
-:root[data-theme="dark"] .pill.other,@media(prefers-color-scheme:dark){.pill.other{color:#e08a7e}}
+/* per-status color tokens (Draft=yellow, Approved=green, anything else=red) */
+.st-draft{--sc:#E3AE17;--sc-bright:#F5C518;--sc-tint:rgba(245,197,24,.18);--sc-ink:#4a3800}
+.st-ok{--sc:#1FA64A;--sc-bright:#1FC24C;--sc-tint:rgba(31,194,76,.15);--sc-ink:#fff}
+.st-other{--sc:#DE2F22;--sc-bright:#F1362C;--sc-tint:rgba(241,54,44,.14);--sc-ink:#fff}
+/* each post is a box framed in its status color, with a prominent header on top */
+.card{display:flex;flex-direction:column;border:3px solid var(--sc);border-radius:14px;
+  overflow:hidden;background:var(--surface);box-shadow:0 2px 12px rgba(20,30,22,.08)}
+.card-head{padding:11px 14px 13px;background:var(--sc-tint);border-bottom:2px solid var(--sc)}
+.chead-row{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+.chead-row .rid{font-weight:800;font-size:13px;color:var(--ink);letter-spacing:.02em}
+.chead-row .cdate{font-size:12px;color:var(--muted);font-weight:600}
+.chead-row .cfmt{font-size:10px;color:var(--muted);border:1px solid var(--line);
+  padding:1px 7px;border-radius:999px;text-transform:uppercase;letter-spacing:.04em}
+.chead-row .pill{margin-left:auto}
+.chook{font-family:Georgia,serif;font-size:15.5px;line-height:1.32;color:var(--ink);
+  font-weight:600;text-wrap:balance}
+.pill{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;
+  padding:4px 11px;border-radius:7px;background:var(--sc-bright);color:var(--sc-ink);
+  box-shadow:0 1px 3px rgba(0,0,0,.22)}
+.frame{overflow:hidden}
 /* avatar monogram */
 .avatar{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;
   overflow:hidden;background:radial-gradient(circle at 30% 25%,#2c4a38,#17281E);
@@ -696,10 +769,7 @@ a.ph-icon.play{text-decoration:none;cursor:pointer}
 /* status frame around each grid item (Draft=yellow, Approved=green, else red),
    drawn as an overlay so it sits ON TOP of the thumbnail */
 .gcell::after{content:"";position:absolute;inset:0;pointer-events:none;
-  border:3px solid transparent;z-index:3}
-.gcell.st-draft::after{border-color:#D9A320}
-.gcell.st-ok::after{border-color:#4E8C5A}
-.gcell.st-other::after{border-color:#C24A3E}
+  border:4px solid var(--sc-bright,transparent);z-index:3}
 .gcell img{width:100%;height:100%;object-fit:cover;display:block}
 .gcorner{position:absolute;top:6px;right:6px;width:19px;height:19px;color:#fff;
   filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
@@ -714,6 +784,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
 <div class="wrap">
   <header class="top"><h1>Ghedee Social Calendar</h1><span class="sub">{{SUBTITLE}}</span></header>
   {{CHIPS}}
+  {{STATUS_CHIPS}}
   <div id="feed">{{SECTIONS}}</div>
   {{GRID}}
   <footer>Draft review · nothing here is published. Approve in the calendar, not this page.</footer>
@@ -736,19 +807,55 @@ document.querySelectorAll('.media.carousel').forEach(function(c){
     if(k!==i){i=k; sync();} },90)});
   sync();
 });
-document.querySelectorAll('.chip').forEach(function(btn){
+var flt={f:'all', s:'all'};
+function statusMatch(s){
+  if(flt.s==='all') return true;
+  if(flt.s==='needs') return s!=='ok';
+  return s===flt.s;
+}
+function applyFilter(){
+  var grid=document.getElementById('grid'), feed=document.getElementById('feed');
+  var inGrid = flt.f==='grid';
+  feed.classList.toggle('hide', inGrid);
+  if(grid) grid.classList.toggle('hide', !inGrid);
+  if(inGrid){
+    document.querySelectorAll('.gcell').forEach(function(c){
+      c.classList.toggle('hide', !statusMatch(c.dataset.status)); });
+    return;
+  }
+  document.querySelectorAll('.card').forEach(function(c){
+    var vis=(flt.f==='all'||c.dataset.platform===flt.f) && statusMatch(c.dataset.status);
+    c.classList.toggle('hide', !vis);
+  });
+  document.querySelectorAll('.week').forEach(function(w){
+    w.classList.toggle('hide', !w.querySelector('.card:not(.hide)')); });
+}
+document.querySelectorAll('.chip[data-f]').forEach(function(btn){
   btn.addEventListener('click',function(){
-    document.querySelectorAll('.chip').forEach(function(b){b.classList.remove('active')});
-    btn.classList.add('active');
-    var f=btn.dataset.f, feed=document.getElementById('feed'), grid=document.getElementById('grid');
-    if(f==='grid'){ feed.classList.add('hide'); if(grid) grid.classList.remove('hide'); return; }
-    if(grid) grid.classList.add('hide'); feed.classList.remove('hide');
-    document.querySelectorAll('.card').forEach(function(c){
-      c.classList.toggle('hide', f!=='all' && c.dataset.platform!==f);
-    });
-    document.querySelectorAll('.week').forEach(function(w){
-      var any=w.querySelector('.card:not(.hide)');
-      w.classList.toggle('hide', !any);
+    document.querySelectorAll('.chip[data-f]').forEach(function(b){b.classList.remove('active')});
+    btn.classList.add('active'); flt.f=btn.dataset.f; applyFilter();
+  });
+});
+document.querySelectorAll('.chip[data-s]').forEach(function(btn){
+  btn.addEventListener('click',function(){
+    document.querySelectorAll('.chip[data-s]').forEach(function(b){b.classList.remove('active')});
+    btn.classList.add('active'); flt.s=btn.dataset.s; applyFilter();
+  });
+});
+// copy caption / hashtags to clipboard (with a file:// fallback)
+function copyText(t){
+  if(navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(t);
+  return new Promise(function(res){
+    var ta=document.createElement('textarea'); ta.value=t; ta.style.position='fixed';
+    ta.style.opacity='0'; document.body.appendChild(ta); ta.select();
+    try{document.execCommand('copy')}catch(e){} document.body.removeChild(ta); res();
+  });
+}
+document.querySelectorAll('.act[data-copy]').forEach(function(b){
+  b.addEventListener('click',function(){
+    copyText(b.dataset.copy).then(function(){
+      var html=b.innerHTML; b.classList.add('copied'); b.innerHTML='Copied ✓';
+      setTimeout(function(){b.classList.remove('copied'); b.innerHTML=html;},1200);
     });
   });
 });
