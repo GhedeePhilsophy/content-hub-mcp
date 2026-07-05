@@ -101,9 +101,12 @@ class _SheetWriter:
         c = self.cal.cols.get(field)
         return f"'{self.tab}'!{get_column_letter(c)}{row}" if c else None
 
-    def write_result(self, row_index, link=None, cost=None, model=None):
+    def write_result(self, row_index, link=None, cost=None, model=None, overwrite=True):
         for field, val in (("asset_link", link), ("est_cost", cost), ("ai_model", model)):
             if val is None:
+                continue
+            # non-live rehearsal: only fill a blank cell, never clobber a real value
+            if not overwrite and not Calendar.is_blank(self.cal._get(row_index, field)):
                 continue
             a1 = self._a1(field, row_index)
             if a1:
@@ -199,14 +202,24 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
     # --- mock / live: Drive-backed -------------------------------------------
     base_folder, folder = _resolve_base_folder(drive, calendar_id, mode)
     result["folder"] = folder
-    client = types = None
+    image_client = video_client = types = None
     if mode == "live":
-        client, types = media.init_live_client()
+        # Init only the client(s) the in-scope assets actually need: images -> OpenAI
+        # (gpt-image-2), video -> google-genai (Veo). An image-only run never needs a
+        # Gemini key, and vice-versa.
+        if any(a["type"] == "image" for j in in_scope for a in j.assets):
+            image_client = media.init_image_client()
+        if any(a["type"] == "video" for j in in_scope for a in j.assets):
+            video_client, types = media.init_video_client()
         from ..core.sheets import SheetsClient
         writer = _SheetWriter(SheetsClient(config.credentials_path(), config.token_path()),
                               sid, cal.ws.title, cal)
     else:  # mock: openpyxl copy saved to a local *.mock.xlsx; live sheet untouched
         writer = cal
+
+    # Only a live run overwrites an existing cell; a mock rehearsal fills blanks only,
+    # so its estimates/placeholders never clobber real values carried from the sheet.
+    overwrite = mode == "live"
 
     hints: set[str] = set()
     for job in in_scope:
@@ -218,19 +231,20 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
             result["rows"].append({"row_id": job.row_id, "kind": job.plan.kind,
                                    "action": "skipped-existing", "link": existing,
                                    "cost_usd": est})
-            writer.write_result(job.row_index, link=existing, cost=est)
+            writer.write_result(job.row_index, link=existing, cost=est, overwrite=overwrite)
             writer.write_note(job.row_index, "")  # clear any stale failure note
             continue
 
         rec = media.run_batch(job.assets, defaults=media.DEFAULTS, out_dir=out_dir,
                               mode=mode, emit=emit, batch_id=job.row_id,
-                              client=client, types=types)
+                              image_client=image_client, video_client=video_client,
+                              types=types)
         hints.update(rec.get("hints", []))
         outputs = [o for o in rec["outputs"] if not o.get("dry_run")]
         if rec["errors"] or not outputs:
             result["failed"] += 1
             err = rec["errors"][0]["reason"] if rec["errors"] else "no output produced"
-            writer.write_result(job.row_index, link=FAILED_TEXT)
+            writer.write_result(job.row_index, link=FAILED_TEXT, overwrite=overwrite)
             writer.write_note(job.row_index, f"generate failed: {err}")
             result["rows"].append({"row_id": job.row_id, "kind": job.plan.kind,
                                    "action": "failed", "error": err})
@@ -245,14 +259,14 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
             if hint:
                 hints.add(hint)
             result["failed"] += 1
-            writer.write_result(job.row_index, link=FAILED_TEXT)
+            writer.write_result(job.row_index, link=FAILED_TEXT, overwrite=overwrite)
             writer.write_note(job.row_index, f"upload failed: {short}")
             result["rows"].append({"row_id": job.row_id, "kind": job.plan.kind,
                                    "action": "upload-failed", "error": short})
             continue
 
         cost = round(sum(o.get("est_cost_usd", 0) for o in outputs), 4)
-        writer.write_result(job.row_index, link=link, cost=cost,
+        writer.write_result(job.row_index, link=link, cost=cost, overwrite=overwrite,
                             model=outputs[0].get("model"))  # actual model (reflects override)
         writer.write_note(job.row_index, "")
         result["generated"] += 1

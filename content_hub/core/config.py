@@ -30,7 +30,14 @@ def load_dotenv(root: Path = REPO_ROOT) -> None:
 
 
 def gemini_api_key() -> str | None:
+    """Google key — used for VIDEO (Veo) generation only. Images moved to OpenAI."""
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+
+def openai_api_key() -> str | None:
+    """OpenAI key — used for IMAGE generation (gpt-image-2). Needed only for LIVE
+    image runs (mock/dry-run don't call the API)."""
+    return os.environ.get("OPENAI_API_KEY")
 
 
 # --- Google Drive credentials (OAuth "as you") -----------------------------
@@ -48,8 +55,8 @@ def generated_dir() -> Path:
     return Path(os.environ.get("GENERATED_DIR") or (REPO_ROOT / "generated"))
 
 
-DEFAULT_IMAGE_MODEL = "gemini-2.5-flash-image"
-DEFAULT_VIDEO_MODEL = "veo-3.1-generate-preview"
+DEFAULT_IMAGE_MODEL = "gpt-image-2"          # OpenAI (images)
+DEFAULT_VIDEO_MODEL = "veo-3.1-generate-preview"  # Google Veo (video)
 
 
 def brand_font_path() -> str | None:

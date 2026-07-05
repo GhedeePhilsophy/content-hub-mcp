@@ -7,11 +7,11 @@ returns a structured receipt (raising only on programmer error). Human-readable
 progress goes through an ``emit`` callback that defaults to stderr — stdout is
 reserved for the MCP JSON-RPC channel.
 
-  - images: gemini-2.5-flash-image ("Nano Banana")
-  - video:  veo-3.1-* (async long-running operation)
+  - images: gpt-image-2 (OpenAI Images API)
+  - video:  veo-3.1-* (Google, async long-running operation)
 
-Auth: GEMINI_API_KEY in the environment (see config.load_dotenv). Credentials
-are NEVER read from an asset/manifest.
+Auth: OPENAI_API_KEY (images) and GEMINI_API_KEY (video) in the environment (see
+config.load_dotenv). Credentials are NEVER read from an asset/manifest.
 """
 
 from __future__ import annotations
@@ -27,14 +27,40 @@ from pathlib import Path
 from typing import Callable
 
 # --- rough price table (USD), for the cost estimate only; verify against current
-#     Google pricing. Images are flat-per-image; video is per-second. ---------------
-IMAGE_PRICE_PER_IMAGE = 0.039  # gemini-2.5-flash-image, ~1K output
+#     provider pricing. Video is per-second (Veo). ---------------------------------
 VIDEO_PRICE_PER_SECOND = {
     "veo-3.1-generate-preview": 0.40,
     "veo-3.1-fast-generate-preview": 0.15,
     "veo-3.1-lite-generate-preview": 0.03,
 }
 DEFAULT_VIDEO_PRICE_PER_SECOND = 0.15
+
+# Images (OpenAI gpt-image-2) bill per OUTPUT token ($/1M); the token count scales with
+# size × quality. These are representative per-image estimates so the cost cell stays a
+# useful guide — NOT a bill (see OpenAI's image-cost calculator for exact figures).
+IMAGE_PRICE_PER_MTOK = 30.0
+IMAGE_OUTPUT_TOKENS = {"low": 320, "medium": 1300, "high": 4600, "auto": 4600}
+DEFAULT_IMAGE_QUALITY = "high"
+DEFAULT_IMAGE_MODERATION = "low"
+
+
+def image_est_cost(asset: dict | None = None) -> float:
+    """Approx per-image cost from the requested quality (a guide, not a bill). Used for
+    dry-run/mock and as the fallback when the API doesn't return usage."""
+    q = (asset or {}).get("quality") or DEFAULT_IMAGE_QUALITY
+    toks = IMAGE_OUTPUT_TOKENS.get(q, IMAGE_OUTPUT_TOKENS["high"])
+    return round(toks * IMAGE_PRICE_PER_MTOK / 1_000_000, 4)
+
+
+def image_actual_cost(usage) -> float | None:
+    """The REAL per-image cost from the API's usage object (gpt-image-2 bills its output
+    image tokens at $30/1M; the text-input term is a fraction of a cent, so we report the
+    dominant output-token cost). None when usage is unavailable -> caller falls back to
+    ``image_est_cost``."""
+    out = getattr(usage, "output_tokens", None) if usage else None
+    if not out:
+        return None
+    return round(out * IMAGE_PRICE_PER_MTOK / 1_000_000, 4)
 
 # Veo 3.1: a base clip is up to 8s; longer clips are built by chaining "extend"
 # calls that continue from the previous segment, ~7s each, up to VEO_MAX_SECONDS.
@@ -43,7 +69,7 @@ VEO_EXTEND_SECONDS = 7
 VEO_MAX_SECONDS = 30
 
 DEFAULTS = {
-    "image_model": "gemini-2.5-flash-image",
+    "image_model": "gpt-image-2",
     "video_model": "veo-3.1-generate-preview",
     "brand": "",
 }
@@ -56,13 +82,18 @@ def _stderr_emit(msg: str, *, err: bool = False) -> None:
 
 
 # --- error taxonomy --------------------------------------------------------
-FREE_TIER_HINT = ("This API key's project is on the FREE tier, which allows 0 image/video "
+FREE_TIER_HINT = ("This Google project is on the FREE tier, which allows 0 video "
                   "generations. Enable billing (paid tier): "
                   "https://ai.google.dev/gemini-api/docs/billing")
-STALE_MODEL_HINT = ("A model name looks stale — Google rotates -preview builds. Update "
-                    "defaults.image_model / video_model from "
-                    "https://ai.google.dev/gemini-api/docs")
-AUTH_HINT = "Check GEMINI_API_KEY in .env is valid and enabled for this project."
+MODEL_HINT = ("Model not found or no access. Images: confirm your OpenAI account can use "
+              "gpt-image-2 (org verification may be required). Video: Google rotates "
+              "-preview builds — update DEFAULT_VIDEO_MODEL in core/config.py.")
+AUTH_HINT = ("Check OPENAI_API_KEY (images) / GEMINI_API_KEY (video) in .env is valid "
+             "and enabled.")
+BILLING_HINT = ("OpenAI quota/billing: the image request was rejected for insufficient "
+                "quota — add credit or check billing on the OpenAI account.")
+MODERATION_HINT = ("The image was blocked by OpenAI content moderation. Revise the prompt "
+                   "(moderation is already set to 'low').")
 PER_DAY_HINT = ("This is a PER-DAY quota cap for the model (retrying won't clear it "
                 "until the quota resets). Request a higher quota, use a lighter model "
                 "(e.g. veo-3.1-fast-generate-preview), or run fewer per day. Tip: "
@@ -82,33 +113,46 @@ def _quota_info(e: Exception) -> tuple[str | None, int | None]:
 
 
 def is_transient_error(e: Exception) -> bool:
-    """True for retryable server-side hiccups (Veo throws internal 500s intermittently)."""
+    """True for retryable server-side hiccups (Veo throws internal 500s intermittently;
+    OpenAI can throw connection errors / 5xx)."""
     s = str(e).lower()
     return any(k in s for k in (
-        "internal", "'code': 13", "code: 13", "unavailable", "503", "500", "try again"))
+        "internal", "'code': 13", "code: 13", "unavailable", "503", "500", "502", "504",
+        "try again", "connection error", "timeout"))
+
+
+# Hard caps / permanent failures that will NOT clear within a run, so we fail fast
+# instead of burning the whole backoff schedule: Google free-tier (limit: 0), a PER-DAY
+# quota, and OpenAI insufficient_quota / moderation blocks.
+_NON_RETRYABLE = ("free_tier", "freetier", "limit: 0", "insufficient_quota",
+                  "billing_hard_limit", "moderation_blocked")
 
 
 def is_retryable_error(e: Exception) -> bool:
-    """True if waiting and retrying could plausibly succeed: a transient 5xx, or a
-    per-minute 429 rate-limit. NOT retryable: the free-tier hard cap (limit: 0) or a
-    PER-DAY quota — neither clears within a run, so we fail fast instead of burning
-    the full backoff schedule on every affected row."""
+    """True if waiting and retrying could plausibly succeed: a transient 5xx/connection
+    blip, or a per-minute rate-limit (429). NOT retryable: a hard quota/billing cap, a
+    per-day quota, or a moderation block — none clear within a run."""
     if is_transient_error(e):
         return True
     s = str(e).lower()
-    if "resource_exhausted" in s or "429" in str(e):
-        if "free_tier" in s or "freetier" in s or "limit: 0" in s:
-            return False
+    if any(k in s for k in _NON_RETRYABLE):
+        return False
+    if "resource_exhausted" in s or "429" in str(e) or "rate limit" in s or "rate_limit" in s:
         period, _ = _quota_info(e)
         return period != "day"
     return False
 
 
 def friendly_error(e: Exception) -> tuple[str, str | None]:
-    """Map a raw API exception to (short line, hint-or-None) so the log stays readable."""
+    """Map a raw API exception to (short line, hint-or-None) so the log stays readable.
+    Covers both the OpenAI image path and the Google video path."""
     msg = str(e)
     low = msg.lower()
-    if "resource_exhausted" in low or "429" in msg:
+    if "moderation_blocked" in low or "content_policy" in low or "safety system" in low:
+        return ("image blocked by moderation", MODERATION_HINT)
+    if "insufficient_quota" in low or "billing_hard_limit" in low:
+        return ("OpenAI quota/billing", BILLING_HINT)
+    if "resource_exhausted" in low or "429" in msg or "rate limit" in low:
         if "free_tier" in low or "freetier" in low or "limit: 0" in low:
             return ("429 quota: free-tier limit is 0 for these models", FREE_TIER_HINT)
         period, delay = _quota_info(e)
@@ -116,9 +160,10 @@ def friendly_error(e: Exception) -> tuple[str, str | None]:
         tail = f"; API suggests retry in ~{delay}s" if delay else ""
         return (f"429 quota ({scope} limit){tail}",
                 PER_DAY_HINT if period == "day" else None)
-    if "not_found" in low or " 404" in msg:
-        return ("404 model not found", STALE_MODEL_HINT)
-    if any(s in low for s in ("permission_denied", "unauthenticated", "401", "403", "api key")):
+    if "not_found" in low or " 404" in msg or "does not exist" in low:
+        return ("404 model not found / no access", MODEL_HINT)
+    if any(s in low for s in ("permission_denied", "unauthenticated", "401", "403",
+                              "api key", "incorrect api key")):
         return ("auth/permission error", AUTH_HINT)
     return (msg.splitlines()[0][:200], None)  # unknown: first line only
 
@@ -167,43 +212,30 @@ def estimate_cost(assets: list[dict], defaults: dict | None = None) -> float:
             price = VIDEO_PRICE_PER_SECOND.get(model, DEFAULT_VIDEO_PRICE_PER_SECOND)
             total += price * int(a.get("duration_seconds", 6)) * revs
         elif a.get("type") == "image":
-            total += IMAGE_PRICE_PER_IMAGE * revs
+            total += image_est_cost(a) * revs
     return round(total, 4)
 
 
 # --- aspect ratios ----------------------------------------------------------
-# What gemini-2.5-flash-image accepts directly (per the SDK's ImageConfig docs).
-SUPPORTED_IMAGE_RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"}
-# Desired ratios the model can't render -> (generate at this ratio, then center-crop
-# to the desired one). 4:5 (Instagram's tallest) is cropped from a 3:4 render.
-_CROP_SOURCE = {"4:5": "3:4", "5:4": "4:3"}
+# gpt-image-2 accepts an arbitrary WIDTHxHEIGHT (both divisible by 16, aspect ratio
+# between 1:3 and 3:1), so we render the desired ratio NATIVELY — no crop step. Sizes
+# are ~1024px on the short edge; every value here is /16 and within the ratio bounds.
+IMAGE_SIZES = {
+    "1:1": "1024x1024",
+    "4:5": "1024x1280",   # Instagram's tallest feed/carousel ratio
+    "3:4": "1024x1344",
+    "2:3": "1024x1536",
+    "9:16": "1024x1792",
+    "4:3": "1344x1024",
+    "3:2": "1536x1024",
+    "16:9": "1792x1024",
+}
+DEFAULT_IMAGE_SIZE = "1024x1024"
 
 
-def resolve_ratio(desired: str | None) -> tuple[str | None, str | None]:
-    """Return (generation_ratio, crop_to). crop_to is None when the model can render
-    the desired ratio directly; otherwise we generate wider/taller and crop."""
-    if not desired or desired in SUPPORTED_IMAGE_RATIOS:
-        return desired, None
-    src = _CROP_SOURCE.get(desired)
-    return (src, desired) if src else (desired, None)
-
-
-def _center_crop_file(path: Path, ratio: str) -> None:
-    """Center-crop the image at ``path`` to ``ratio`` (e.g. '4:5'), in place."""
-    from PIL import Image
-    tw, th = (int(x) for x in ratio.split(":"))
-    target = tw / th
-    img = Image.open(path).convert("RGB")
-    w, h = img.size
-    if abs(w / h - target) < 0.01:
-        return
-    if w / h > target:                       # too wide -> trim width
-        nw = max(1, round(h * target)); x = (w - nw) // 2
-        img = img.crop((x, 0, x + nw, h))
-    else:                                    # too tall -> trim height
-        nh = max(1, round(w / target)); y = (h - nh) // 2
-        img = img.crop((0, y, w, y + nh))
-    img.save(path)
+def image_size_for(aspect_ratio: str | None) -> str:
+    """The gpt-image-2 ``size`` string for a desired aspect ratio (defaults to square)."""
+    return IMAGE_SIZES.get((aspect_ratio or "").strip(), DEFAULT_IMAGE_SIZE)
 
 
 # --- placeholder generators for mock mode (no deps, no API, no key) ---------
@@ -250,9 +282,22 @@ def _write_image_bytes(part_data, out_path: Path) -> None:
 
 
 # --- generation ------------------------------------------------------------
-def init_live_client():
-    """Create the google-genai client for a live run. Raises RuntimeError with an
-    actionable message if the key or SDK is missing."""
+def init_image_client():
+    """Create the OpenAI client for image generation (gpt-image-2). Raises RuntimeError
+    with an actionable message if the key or SDK is missing."""
+    from . import config
+    if not config.openai_api_key():
+        raise RuntimeError("OPENAI_API_KEY not set. Add it to .env or the environment.")
+    try:
+        from openai import OpenAI
+    except ImportError as e:
+        raise RuntimeError("openai not installed. Run: pip install -r requirements.txt") from e
+    return OpenAI()
+
+
+def init_video_client():
+    """Create the google-genai client for video generation (Veo). Raises RuntimeError
+    with an actionable message if the key or SDK is missing."""
     from . import config
     if not config.gemini_api_key():
         raise RuntimeError("GEMINI_API_KEY not set. Add it to .env or the environment.")
@@ -264,85 +309,64 @@ def init_live_client():
     return genai.Client(), _types
 
 
-def _post_process(out_path: Path, asset: dict, crop_to: str | None) -> None:
-    """After a slide is written: crop to the desired ratio (if the model couldn't
-    render it directly), then stamp on the exact overlay text."""
-    if crop_to:
-        _center_crop_file(out_path, crop_to)
+def _post_process(out_path: Path, asset: dict) -> None:
+    """After a slide is written: stamp on the exact overlay text (if any). gpt-image-2
+    renders the requested ratio natively, so there's no crop step."""
     text = asset.get("overlay_text")
     if text:
         from . import config, textcard
         textcard.overlay_text(out_path, text, font_path=config.brand_font_path())
 
 
-def generate_image(client, types, asset: dict, defaults: dict, out_dir: Path,
+def generate_image(client, asset: dict, defaults: dict, out_dir: Path,
                    mode: str, emit: Emit, retries: int = 3, backoff: int = 15) -> list[dict]:
     model = asset.get("model") or defaults["image_model"]
     prompt = asset["prompt"]
     if asset.get("negative_prompt"):
+        # gpt-image-2 has no negative-prompt field, so fold it into the prompt text.
         prompt = f"{prompt}. Avoid: {asset['negative_prompt']}."
     if defaults.get("brand"):
         prompt = f"{prompt} (brand: {defaults['brand']})"
 
-    # 4:5 (and any unsupported ratio) is rendered at a supported ratio then cropped.
-    gen_ratio, crop_to = resolve_ratio(asset.get("aspect_ratio"))
+    size = image_size_for(asset.get("aspect_ratio"))          # rendered natively, no crop
+    quality = asset.get("quality") or DEFAULT_IMAGE_QUALITY
+    moderation = asset.get("moderation") or DEFAULT_IMAGE_MODERATION
+    est = image_est_cost(asset)
     target_dir = asset_target_dir(out_dir, asset)
     results = []
     for n in revision_numbers(asset):
         out_path = target_dir / f"{asset['id']}_v{n}.png"
         rel = out_path.relative_to(out_dir)
         if mode == "dry-run":
-            emit(f"  [dry-run] image -> {rel}  (model={model})")
+            emit(f"  [dry-run] image -> {rel}  (model={model}, {size}, q={quality})")
             results.append({"file": str(out_path), "model": model, "dry_run": True,
-                            "est_cost_usd": round(IMAGE_PRICE_PER_IMAGE, 4)})
+                            "est_cost_usd": est})
             continue
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if mode == "mock":
-            write_placeholder_png(out_path, gen_ratio, f"{asset['id']}_v{n}")
-            _post_process(out_path, asset, crop_to)
+            write_placeholder_png(out_path, asset.get("aspect_ratio"), f"{asset['id']}_v{n}")
+            _post_process(out_path, asset)
             emit(f"  mock   -> {rel}")
             results.append({"file": str(out_path), "model": model, "mock": True,
-                            "est_cost_usd": round(IMAGE_PRICE_PER_IMAGE, 4)})
+                            "est_cost_usd": est})
             continue
 
-        config_obj = None
-        if gen_ratio:
-            # Nano Banana takes aspect ratio via image_config.
-            config_obj = types.GenerateContentConfig(
-                response_modalities=["Image"],
-                image_config=types.ImageConfig(aspect_ratio=gen_ratio),
-            )
-        # Retry rate-limit 429s and transient 5xx with exponential backoff; only a
-        # successful generation bills, so a retried call costs nothing extra.
+        # Retry rate-limit 429s and transient 5xx/connection blips with exponential
+        # backoff; only a successful generation bills, so a retried call costs nothing.
         attempt = 0
         while True:
             try:
-                resp = client.models.generate_content(
-                    model=model, contents=prompt, config=config_obj)
-                # A safety-blocked or empty response has candidates[0].content == None
-                # (or no candidates), so guard every hop instead of crashing on .parts.
-                cand = (resp.candidates or [None])[0]
-                content = getattr(cand, "content", None) if cand else None
-                parts = getattr(content, "parts", None) if content else None
-                if not parts:
-                    reason = getattr(cand, "finish_reason", None) if cand else None
-                    block = getattr(getattr(resp, "prompt_feedback", None),
-                                    "block_reason", None)
-                    detail = reason or block
-                    raise RuntimeError(
-                        f"no content returned for '{asset['id']}'"
-                        + (f" (reason={detail})" if detail else "")
-                        + " — usually a safety block; revise the prompt")
-                saved = False
-                for part in parts:
-                    if getattr(part, "inline_data", None) and part.inline_data.data:
-                        _write_image_bytes(part.inline_data.data, out_path)
-                        saved = True
-                        break
-                if not saved:
+                resp = client.images.generate(
+                    model=model, prompt=prompt, size=size,
+                    quality=quality, moderation=moderation, n=1)
+                # gpt-image models always return base64 (no url); guard an empty response.
+                data = getattr(resp, "data", None) or []
+                b64 = getattr(data[0], "b64_json", None) if data else None
+                if not b64:
                     raise RuntimeError(f"no image data returned for asset '{asset['id']}'")
-                _post_process(out_path, asset, crop_to)
+                _write_image_bytes(b64, out_path)   # tolerates base64 str
+                _post_process(out_path, asset)
                 break
             except Exception as e:
                 if attempt < retries and is_retryable_error(e):
@@ -353,10 +377,12 @@ def generate_image(client, types, asset: dict, defaults: dict, out_dir: Path,
                     time.sleep(wait)
                     continue
                 raise
-        emit(f"  image  -> {out_path.name}" + (f"  (after {attempt} retr"
+        # Real billed cost from the API's usage; fall back to the estimate if absent.
+        cost = image_actual_cost(getattr(resp, "usage", None)) or est
+        emit(f"  image  -> {out_path.name}  (~${cost})" + (f"  (after {attempt} retr"
              f"{'y' if attempt == 1 else 'ies'})" if attempt else ""))
         results.append({"file": str(out_path), "model": model, "attempts": attempt + 1,
-                        "est_cost_usd": round(IMAGE_PRICE_PER_IMAGE, 4)})
+                        "est_cost_usd": cost})
     return results
 
 
@@ -460,22 +486,30 @@ def generate_video(client, types, asset: dict, defaults: dict, out_dir: Path,
 def run_batch(assets: list[dict], *, defaults: dict, out_dir: Path, mode: str,
               only: str | None = None, emit: Emit | None = None,
               poll_seconds: int = 10, retries: int = 3, backoff: int = 15,
-              batch_id: str = "batch", client=None, types=None) -> dict:
+              batch_id: str = "batch", image_client=None, video_client=None,
+              types=None) -> dict:
     """Generate every asset in ``assets`` and return a receipt.
 
     ``mode`` is one of "dry-run" | "mock" | "live". A failed asset is recorded and
     skipped — one bad asset never kills the batch. Uploading is the caller's job
     (the Social workflow routes by type and checks Drive for existing files first).
 
-    For a live run the caller may pass a pre-built ``client``/``types`` (from
-    init_live_client) to reuse one API client across many small batches.
+    Images use the OpenAI client (``image_client``), video uses google-genai
+    (``video_client``/``types``). For a live run the caller may pass pre-built clients
+    (from init_image_client / init_video_client) to reuse them across many small
+    batches; whichever is needed and not supplied is created lazily here.
     """
     if mode not in ("dry-run", "mock", "live"):
         raise ValueError(f"mode must be dry-run|mock|live, got {mode!r}")
     emit = emit or _stderr_emit
 
-    if mode == "live" and client is None:
-        client, types = init_live_client()
+    if mode == "live":
+        def _wanted(a):
+            return a.get("type") in ("image", "video") and (not only or a.get("type") == only)
+        if image_client is None and any(a.get("type") == "image" and _wanted(a) for a in assets):
+            image_client = init_image_client()
+        if video_client is None and any(a.get("type") == "video" and _wanted(a) for a in assets):
+            video_client, types = init_video_client()
 
     receipt = {"batch_id": batch_id, "mode": mode,
                "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -500,11 +534,11 @@ def run_batch(assets: list[dict], *, defaults: dict, out_dir: Path, mode: str,
             continue
         try:
             if atype == "image":
-                out = generate_image(client, types, asset, defaults, out_dir, mode, emit,
+                out = generate_image(image_client, asset, defaults, out_dir, mode, emit,
                                      retries, backoff)
             else:
-                out = generate_video(client, types, asset, defaults, out_dir, mode, emit,
-                                     poll_seconds, retries, backoff)
+                out = generate_video(video_client, types, asset, defaults, out_dir, mode,
+                                     emit, poll_seconds, retries, backoff)
             receipt["outputs"].extend(out)
         except Exception as e:  # keep going; one bad asset shouldn't kill the batch
             short, hint = friendly_error(e)

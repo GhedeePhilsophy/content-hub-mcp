@@ -13,7 +13,10 @@ pillow>=10.0.0
 imageio>=2.30.0
 imageio-ffmpeg>=0.4.9
 
-# Media generation (images: Nano Banana, video: Veo)
+# Media generation — images: OpenAI gpt-image-2
+openai>=1.50.0
+
+# Media generation — video: Google Veo
 google-genai>=1.0.0
 
 # Google Drive (upload, existence-check, download)

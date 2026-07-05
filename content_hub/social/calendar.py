@@ -25,8 +25,8 @@ _ONIMG = re.compile(r"On-image text\s*:", re.IGNORECASE)
 _QUOTES = "“”\"'‘’"
 
 # Carousel slides are painted clean and the wording is stamped on afterward, so the
-# MODEL must render none. gemini-2.5-flash-image tends to invent titles/subtitles, so
-# this is deliberately forceful and repeated in both the prompt and the negatives.
+# MODEL must render none. Image models tend to invent titles/subtitles, so this is
+# deliberately forceful and repeated in both the prompt and the negatives.
 _NO_TEXT_DIRECTIVE = (
     " CRITICAL: This image must contain absolutely NO text of any kind — no words, "
     "letters, captions, titles, subtitles, labels, numbers, signage, handwriting or "
@@ -329,29 +329,52 @@ class Calendar:
         return n if n > 0 else 4  # asset-structure doc: carousels are 4–5 slides
 
     # --- write ----------------------------------------------------------------
+    @staticmethod
+    def is_blank(v) -> bool:
+        """True if a cell value counts as empty (None or a whitespace-only string)."""
+        return v is None or (isinstance(v, str) and not v.strip())
+
     def write_result(self, row_index: int, link: str | None = None,
-                     cost: float | str | None = None, model: str | None = None) -> None:
+                     cost: float | str | None = None, model: str | None = None,
+                     overwrite: bool = True) -> None:
         """Write the Generated Asset Link cell, and/or the cost + AI Model cells.
 
         A ``link`` that is a URL is written as a real, styled hyperlink; any other
         string (e.g. a ``Failed`` status) is written as plain text with no hyperlink
         or link styling, so a status never masquerades as a clickable link. ``model``
         records the model that actually produced the asset, so a per-run override is
-        reflected in the sheet."""
+        reflected in the sheet.
+
+        ``overwrite`` is True for a live run (always writes). In a non-live rehearsal
+        (mock/dry-run) it is False, so a cell is written only when it's currently blank
+        — a rehearsal's estimate/placeholder never clobbers a real value."""
         from openpyxl.styles import Font
-        if link is not None and "asset_link" in self.cols:
-            cell = self.ws.cell(row_index, self.cols["asset_link"])
-            cell.value = link
-            if isinstance(link, str) and link.lower().startswith(("http://", "https://")):
-                cell.hyperlink = link
-                cell.font = Font(color=LINK_FONT_COLOR, underline="single")
-            else:
-                cell.hyperlink = None
-                cell.font = Font()
-        if cost is not None and "est_cost" in self.cols:
-            self.ws.cell(row_index, self.cols["est_cost"]).value = cost
-        if model is not None and "ai_model" in self.cols:
-            self.ws.cell(row_index, self.cols["ai_model"]).value = model
+
+        def _col(field: str) -> int | None:
+            c = self.cols.get(field)
+            if not c or (not overwrite and not self.is_blank(self.ws.cell(row_index, c).value)):
+                return None
+            return c
+
+        if link is not None:
+            c = _col("asset_link")
+            if c:
+                cell = self.ws.cell(row_index, c)
+                cell.value = link
+                if isinstance(link, str) and link.lower().startswith(("http://", "https://")):
+                    cell.hyperlink = link
+                    cell.font = Font(color=LINK_FONT_COLOR, underline="single")
+                else:
+                    cell.hyperlink = None
+                    cell.font = Font()
+        if cost is not None:
+            c = _col("est_cost")
+            if c:
+                self.ws.cell(row_index, c).value = cost
+        if model is not None:
+            c = _col("ai_model")
+            if c:
+                self.ws.cell(row_index, c).value = model
 
     NOTE_MARKER = "[auto]"
 
