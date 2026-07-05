@@ -1,15 +1,17 @@
 """social — the Social Calendar workflow (Content Hub workflow #1).
 
   rules      calendar naming, quarter→folder, aspect-ratio rules, Drive layout
-  calendar   parse the .xlsx source of truth → jobs; write results back
-  workflow   the 3 operations (generate_media / upload_calendar / download_latest)
+  calendar   parse the calendar → jobs; write results back
+  workflow   generate_media
+  sheet_ops  upload / download / snapshot for the living Google Sheet
+  preview    the HTML review page
 
-The three operations are re-exported here so callers can use
-`from content_hub.social import generate_media` etc. Blog and email will be
-sibling packages with the same shape.
+Operations are re-exported here so callers can use
+`from content_hub.social import generate_media` etc.
 """
 
-from .workflow import generate_media, upload_calendar, download_latest
+from .workflow import generate_media
+from .sheet_ops import upload, download, snapshot
 
-__all__ = ["generate_media", "upload_calendar", "download_latest",
-           "rules", "calendar", "workflow"]
+__all__ = ["generate_media", "upload", "download", "snapshot",
+           "rules", "calendar", "workflow", "sheet_ops", "preview"]
