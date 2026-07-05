@@ -25,7 +25,7 @@ from pathlib import Path
 
 from . import rules
 from ..core import config
-from ..core.drive import FOLDER_MIME
+from ..core.drive import FOLDER_MIME, GSHEET_MIME
 
 # --- platform identity -----------------------------------------------------
 _PLATFORMS = {
@@ -197,11 +197,17 @@ class _DriveSource:
         fid = self.drive.find_folder_path(base, subpath) if base else None
         return self.drive.list_children(fid) if fid else []
 
-    def fetch_calendar(self, version: int | None) -> tuple[int, bytes, str | None]:
-        """Download the calendar .xlsx from 00_Calendar & Docs — the given version, or
-        the latest if version is None. Returns (version, bytes, drive_view_link)."""
+    def fetch_calendar(self, version: int | None) -> tuple[str, bytes, str | None]:
+        """Get the calendar as .xlsx bytes. With no version, prefer the LIVING Google
+        Sheet (exported to .xlsx) so the preview reflects current edits; otherwise fall
+        back to a versioned .xlsx snapshot. Returns (label, bytes, drive_view_link)."""
         if not self.docs:
             raise FileNotFoundError(f"{rules.SUBFOLDER_DOCS} not found on Drive.")
+        if version is None:
+            live_name = f"{rules.CALENDAR_PREFIX}_{self.calendar_id}"
+            live = self.drive.find_by_name(live_name, self.docs, mime=GSHEET_MIME)
+            if live:
+                return "live", self.drive.export_as_xlsx(live["id"]), live.get("webViewLink")
         best = None  # (version, file)
         for f in self.drive.list_children(self.docs):
             parsed = rules.parse_calendar_filename(f["name"])
@@ -211,11 +217,11 @@ class _DriveSource:
                 if best is None or parsed[1] > best[0]:
                     best = (parsed[1], f)
         if not best:
-            want = f"v{version}" if version else "any version"
+            want = f"v{version}" if version else "the live sheet or any .xlsx"
             raise FileNotFoundError(
-                f"no {rules.CALENDAR_PREFIX}_{self.calendar_id}_{want}.xlsx in "
+                f"could not find {want} for {self.calendar_id} in "
                 f"{rules.SUBFOLDER_DOCS} on Drive.")
-        return best[0], self.drive.download_bytes(best[1]["id"]), best[1].get("webViewLink")
+        return f"v{best[0]}", self.drive.download_bytes(best[1]["id"]), best[1].get("webViewLink")
 
     def assets_for(self, row_id: str) -> dict:
         pre = f"{row_id}_"
@@ -471,11 +477,11 @@ def _grid_cell(job, assets: dict, cache=None) -> str:
 # --- page assembly ---------------------------------------------------------
 def build_preview(calendar_id: str, version: int | None = None, *,
                   out_path: Path | None = None, quarter_folder: str | None = None,
-                  no_cache: bool = False, emit=None) -> dict:
-    """Build the HTML review page. Both the calendar workbook and every post asset are
-    read from Google Drive (the shared, actively-edited copy) — ``version`` selects a
-    specific draft, or the latest on Drive when omitted. Thumbnails are cached by Drive
-    md5 so re-runs only re-fetch what changed."""
+                  no_cache: bool = False, publish: bool = True, emit=None) -> dict:
+    """Build the HTML review page from Google Drive. With no ``version`` it reads the
+    LIVING Google Sheet (current edits); a version reads that .xlsx snapshot instead.
+    Thumbnails are cached by Drive md5. Unless ``publish`` is False, the finished page is
+    also uploaded to 00_Calendar & Docs as Ghedee_Social_Calendar_<id>_preview.html."""
     import io
     import sys
     from .calendar import Calendar
@@ -495,8 +501,8 @@ def build_preview(calendar_id: str, version: int | None = None, *,
     client = DriveClient(config.credentials_path(), config.token_path(),
                          allow_interactive=False)
     drive_source = _DriveSource(client, calendar_id, quarter_folder)
-    version, xlsx_bytes, sheet_link = drive_source.fetch_calendar(version)
-    emit(f"calendar: {rules.calendar_filename(calendar_id, version)} (from Drive)")
+    label, xlsx_bytes, sheet_link = drive_source.fetch_calendar(version)
+    emit(f"calendar: {calendar_id} ({label}) from Drive")
 
     def resolve(row_id: str) -> dict:
         return drive_source.assets_for(row_id)
@@ -569,25 +575,34 @@ def build_preview(calendar_id: str, version: int | None = None, *,
         'Draft feed — newest first.</div></div></div>'
         f'<div class="iggrid">{"".join(reversed(grid_cells))}</div></section>')
 
-    doc_title = f"Ghedee Social Calendar — {calendar_id.replace('_', ' ')} · Review v{version}"
+    doc_title = f"Ghedee Social Calendar — {calendar_id.replace('_', ' ')} · Review ({label})"
     page = _PAGE.replace("{{TITLE}}", _esc(doc_title)).replace("{{CHIPS}}", chips) \
         .replace("{{STATUS_CHIPS}}", status_chips) \
         .replace("{{SECTIONS}}", "".join(sections)).replace("{{GRID}}", grid_html) \
         .replace("{{AVATAR_CSS}}", avatar_css) \
         .replace("{{SUBTITLE}}", f"{len(jobs)} posts · draft review")
 
-    result = {"calendar_id": calendar_id, "version": version, "posts": len(jobs),
+    result = {"calendar_id": calendar_id, "source": label, "posts": len(jobs),
               "weeks": len(weeks), "with_images": n_asset}
     if cache is not None:
         cache.save()
         emit(f"cache: {cache.hits} reused, {cache.misses} re-encoded")
         result["cache"] = {"reused": cache.hits, "encoded": cache.misses}
 
-    out_path = Path(out_path) if out_path else (
-        rules.calendar_dir() / f"{rules.CALENDAR_PREFIX}_{calendar_id}_v{version}_preview.html")
+    fname = f"{rules.CALENDAR_PREFIX}_{calendar_id}_preview.html"
+    out_path = Path(out_path) if out_path else (rules.calendar_dir() / fname)
     out_path.write_text(page, encoding="utf-8")
     emit(f"wrote {out_path}")
     result["path"] = str(out_path)
+
+    # publish alongside the calendar in 00_Calendar & Docs (same-named file, in place)
+    if publish and drive_source.docs:
+        up = drive_source.drive.upload(out_path, drive_source.docs)
+        drive_source.drive.make_shareable(up["id"])
+        result["drive_file"] = up["name"]
+        result["drive_link"] = up["link"]
+        emit(f"published preview -> {up['name']} in {rules.SUBFOLDER_DOCS}")
+
     return result
 
 

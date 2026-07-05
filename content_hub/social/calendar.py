@@ -302,18 +302,23 @@ class Calendar:
 
     NOTE_MARKER = "[auto]"
 
+    @classmethod
+    def merged_note(cls, existing, text: str) -> str:
+        """Merge an automated note into an existing Notes cell: preserve human-written
+        lines, replace the single ``[auto]`` line (so re-runs don't stack), and drop it
+        entirely when ``text`` is empty. Shared by the openpyxl and Sheets writers."""
+        kept = [ln for ln in str(existing or "").splitlines()
+                if not ln.startswith(cls.NOTE_MARKER)]
+        if text:
+            kept.append(f"{cls.NOTE_MARKER} {text}")
+        return "\n".join(kept).strip()
+
     def write_note(self, row_index: int, text: str) -> None:
-        """Record an automated note (e.g. a failure reason) in the Notes column,
-        preserving any human-written notes. A prior ``[auto]`` line is replaced, so
-        re-runs don't stack duplicates; pass an empty text to clear the auto line."""
+        """Record an automated note in the Notes column, preserving human notes."""
         if "notes" not in self.cols:
             return
         cell = self.ws.cell(row_index, self.cols["notes"])
-        kept = [ln for ln in str(cell.value or "").splitlines()
-                if not ln.startswith(self.NOTE_MARKER)]
-        if text:
-            kept.append(f"{self.NOTE_MARKER} {text}")
-        cell.value = "\n".join(kept).strip() or None
+        cell.value = self.merged_note(cell.value, text) or None
 
     def save(self, path: Path | None = None) -> Path:
         dest = Path(path) if path else self.path

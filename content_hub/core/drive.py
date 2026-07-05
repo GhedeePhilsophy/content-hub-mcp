@@ -21,11 +21,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-SCOPES = ["https://www.googleapis.com/auth/drive"]
 FOLDER_MIME = "application/vnd.google-apps.folder"
+GSHEET_MIME = "application/vnd.google-apps.spreadsheet"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MIME_BY_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-               ".mp4": "video/mp4", ".mov": "video/quicktime",
-               ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+               ".mp4": "video/mp4", ".mov": "video/quicktime", ".xlsx": XLSX_MIME}
 
 
 def _q_escape(name: str) -> str:
@@ -37,37 +37,14 @@ class DriveClient:
     def __init__(self, credentials_path: Path, token_path: Path,
                  allow_interactive: bool = True):
         try:
-            from google.auth.transport.requests import Request
-            from google.oauth2.credentials import Credentials
-            from google_auth_oauthlib.flow import InstalledAppFlow
             from googleapiclient.discovery import build
         except ImportError as e:
             raise RuntimeError(
                 "Drive libraries not installed. Run: pip install -r requirements.txt"
             ) from e
-
-        creds = None
-        if token_path.exists():
-            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            elif allow_interactive:
-                if not credentials_path.exists():
-                    raise RuntimeError(
-                        f"OAuth client secret not found at {credentials_path}. Create a "
-                        "Desktop-app OAuth client in Google Cloud Console and save it there."
-                    )
-                flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
-                creds = flow.run_local_server(port=0)
-            else:
-                raise RuntimeError(
-                    f"No valid Drive token at {token_path}. Authorise once interactively "
-                    "with `python -m content_hub.cli auth` before running headless."
-                )
-            token_path.write_text(creds.to_json(), encoding="utf-8")
-
-        self.svc = build("drive", "v3", credentials=creds)
+        from .google_auth import authorize
+        self.creds = authorize(credentials_path, token_path, allow_interactive)
+        self.svc = build("drive", "v3", credentials=self.creds)
         self._folder_cache: dict[tuple[str, str], str] = {}
 
     # --- folders --------------------------------------------------------------
@@ -195,3 +172,45 @@ class DriveClient:
         q = f"trashed=false and '{parent_id}' in parents"
         return self._list(
             q, fields="files(id,name,mimeType,md5Checksum,modifiedTime,size,webViewLink)")
+
+    # --- Google Sheet conversion / snapshots ----------------------------------
+    def find_by_name(self, name: str, parent_id: str, mime: str | None = None) -> dict | None:
+        q = (f"trashed=false and name='{_q_escape(name)}' and '{parent_id}' in parents"
+             + (f" and mimeType='{mime}'" if mime else ""))
+        files = self._list(q, fields="files(id,name,mimeType,webViewLink)")
+        return files[0] if files else None
+
+    def upload_as_google_sheet(self, data: bytes, name: str, parent_id: str) -> dict:
+        """Create a NEW native Google Sheet from .xlsx bytes (Drive converts on import)."""
+        from googleapiclient.http import MediaInMemoryUpload
+        media = MediaInMemoryUpload(data, mimetype=XLSX_MIME, resumable=False)
+        body = {"name": name, "mimeType": GSHEET_MIME, "parents": [parent_id]}
+        f = self.svc.files().create(
+            body=body, media_body=media, fields="id,name,webViewLink",
+            supportsAllDrives=True).execute()
+        return {"id": f["id"], "name": f["name"], "link": f.get("webViewLink")}
+
+    def trash(self, file_id: str) -> None:
+        self.svc.files().update(fileId=file_id, body={"trashed": True},
+                                supportsAllDrives=True).execute()
+
+    def export_as_xlsx(self, file_id: str) -> bytes:
+        """Export a native Google Sheet to .xlsx bytes (for a versioned snapshot)."""
+        import io
+        from googleapiclient.http import MediaIoBaseDownload
+        req = self.svc.files().export_media(fileId=file_id, mimeType=XLSX_MIME)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+
+    def upload_bytes(self, data: bytes, name: str, parent_id: str, mime: str) -> dict:
+        """Create a new file from in-memory bytes (e.g. a snapshot .xlsx)."""
+        from googleapiclient.http import MediaInMemoryUpload
+        media = MediaInMemoryUpload(data, mimetype=mime, resumable=False)
+        f = self.svc.files().create(
+            body={"name": name, "parents": [parent_id]}, media_body=media,
+            fields="id,name,webViewLink", supportsAllDrives=True).execute()
+        return {"id": f["id"], "name": f["name"], "link": f.get("webViewLink")}

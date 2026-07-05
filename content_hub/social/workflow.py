@@ -1,14 +1,11 @@
-"""social — the Social Calendar workflow orchestrator.
+"""social.workflow — the media generation orchestrator.
 
-Ties the calendar sheet, the generation engine, and Drive together into the three
-operations the MCP server exposes:
-
-  upload_calendar   push a local draft .xlsx to  <quarter>/00_Calendar & Docs/
   generate_media    read Draft rows -> generate the missing ones -> upload
                     route-by-type -> write the Drive link + cost back into the sheet
-  download_latest   pull the newest Ghedee_Social_Calendar_<id>_v<n>.xlsx to local
 
-Every operation takes ``mode`` = dry-run | mock | live:
+(upload / download / snapshot of the calendar itself live in social.sheet_ops.)
+
+generate_media takes ``mode`` = dry-run | mock | live:
   dry-run  plan only. No Drive, no API, nothing written.
   mock     real pipeline with placeholder files. Uploads and write-back are
            routed to a SAFE mock destination (a mock root, or a '_mock rehearsal'
@@ -41,10 +38,6 @@ def _drive_client(interactive: bool = False):
     from ..core.drive import DriveClient
     return DriveClient(config.credentials_path(), config.token_path(),
                        allow_interactive=interactive)
-
-
-def _local_calendar_path(calendar_id: str, version: int) -> Path:
-    return rules.calendar_dir() / rules.calendar_filename(calendar_id, version)
 
 
 def _resolve_base_folder(drive, calendar_id: str, mode: str,
@@ -97,26 +90,69 @@ def _already_on_drive(drive, parent: str, job) -> str | None:
     return hits[0].get("webViewLink") if hits else None
 
 
+# --- writeback target -------------------------------------------------------
+class _SheetWriter:
+    """Records machine-owned cell edits and flushes them to the living Google Sheet in
+    place via the Sheets API — same write_result/write_note interface as Calendar, so the
+    generate loop is writeback-agnostic (mock writes to the openpyxl Calendar instead)."""
+
+    def __init__(self, sheets, spreadsheet_id: str, tab: str, cal):
+        self.sheets, self.sid, self.tab, self.cal = sheets, spreadsheet_id, tab, cal
+        self.updates: list[tuple[str, object]] = []
+
+    def _a1(self, field: str, row: int) -> str | None:
+        from openpyxl.utils import get_column_letter
+        c = self.cal.cols.get(field)
+        return f"'{self.tab}'!{get_column_letter(c)}{row}" if c else None
+
+    def write_result(self, row_index, link=None, cost=None, model=None):
+        for field, val in (("asset_link", link), ("est_cost", cost), ("ai_model", model)):
+            if val is None:
+                continue
+            a1 = self._a1(field, row_index)
+            if a1:
+                self.updates.append((a1, val))
+
+    def write_note(self, row_index, text):
+        a1 = self._a1("notes", row_index)
+        if a1:
+            self.updates.append(
+                (a1, Calendar.merged_note(self.cal._get(row_index, "notes"), text)))
+
+    def flush(self) -> int:
+        return self.sheets.batch_update(self.sid, self.updates).get(
+            "totalUpdatedCells", len(self.updates))
+
+
 # --- operations ------------------------------------------------------------
-def generate_media(calendar_id: str, version: int, mode: str = "dry-run", *,
+def generate_media(calendar_id: str, mode: str = "dry-run", *,
                    only: str | None = None, quarter_folder: str | None = None,
                    image_model: str | None = None, video_model: str | None = None,
                    video_duration: int | None = None, emit=None) -> dict:
-    """Generate the missing AI visuals for a calendar's Draft rows and (mock/live)
-    upload them + write links back. See module docstring for mode semantics.
+    """Generate the missing AI visuals for the living calendar's Draft rows, upload them,
+    and write the Drive link / cost / model / notes back INTO THE LIVING GOOGLE SHEET in
+    place (live) — no download/re-upload, so concurrent human edits aren't clobbered.
+    dry-run plans + costs only; mock rehearses to a safe Drive destination and a local
+    *.mock.xlsx (the live sheet is untouched).
 
-    ``image_model`` / ``video_model`` override the per-row AI Model for this run
-    only (the sheet is unchanged) — e.g. point video rows at a lighter Veo model
-    to dodge a quota without editing the calendar. ``video_duration`` sets the
-    target clip length in seconds (Veo builds >8s clips by chaining extensions)."""
+    image_model / video_model / video_duration override per-row settings for this run
+    only; on success the model actually used is written into the sheet's AI Model cell."""
+    import io
     emit = emit or _stderr_emit
     if mode not in ("dry-run", "mock", "live"):
         raise ValueError(f"mode must be dry-run|mock|live, got {mode!r}")
 
-    path = _local_calendar_path(calendar_id, version)
-    if not path.exists():
-        raise FileNotFoundError(f"local calendar not found: {path}")
-    cal = Calendar(path)
+    # The calendar is the living Google Sheet, exported to .xlsx bytes for reading.
+    from . import sheet_ops
+    drive = _drive_client(interactive=False)
+    docs = sheet_ops._docs_folder(drive, calendar_id, quarter_folder)
+    live = sheet_ops.find_live_sheet(drive, docs, calendar_id)
+    if not live:
+        raise FileNotFoundError(
+            f"no live sheet '{sheet_ops.live_sheet_name(calendar_id)}' on Drive; "
+            "run `social upload <id> <version>` first.")
+    sid = live["id"]
+    cal = Calendar(io.BytesIO(drive.export_as_xlsx(sid)))
     jobs = cal.read_jobs()
 
     def _wanted(job) -> bool:
@@ -129,12 +165,10 @@ def generate_media(calendar_id: str, version: int, mode: str = "dry-run", *,
         return True
 
     in_scope = [j for j in jobs if _wanted(j)]
-    # Overrides: explicit arg (CLI flag / tool param) wins over the env default
-    # (VIDEO_MODEL / IMAGE_MODEL / VIDEO_DURATION), which beats the sheet's AI Model.
+    # Overrides: explicit arg (flag/param) beats the env default, which beats the sheet.
     video_model = video_model or config.video_model_override()
     image_model = image_model or config.image_model_override()
     video_duration = video_duration if video_duration is not None else config.video_duration_override()
-    # Apply before planning, so dry-run cost reflects them.
     for job in in_scope:
         for a in job.assets:
             if a["type"] == "video":
@@ -145,37 +179,38 @@ def generate_media(calendar_id: str, version: int, mode: str = "dry-run", *,
             elif a["type"] == "image" and image_model:
                 a["model"] = image_model
     out_dir = config.generated_dir() / calendar_id
-    result = {"calendar_id": calendar_id, "version": version, "mode": mode,
-              "rows_total": len(jobs), "in_scope": len(in_scope),
-              "generated": 0, "skipped_existing": 0, "failed": 0,
-              "estimated_cost_usd": 0.0, "rows": [], "hints": [], "writeback_file": None}
+    result = {"calendar_id": calendar_id, "mode": mode, "rows_total": len(jobs),
+              "in_scope": len(in_scope), "generated": 0, "skipped_existing": 0,
+              "failed": 0, "estimated_cost_usd": 0.0, "rows": [], "hints": [],
+              "sheet_link": live.get("webViewLink")}
 
-    # --- dry-run: plan only, no Drive, no API --------------------------------
+    # --- dry-run: plan + cost only; the live sheet is not modified ------------
     if mode == "dry-run":
         total = 0.0
         for j in in_scope:
-            rec = media.run_batch(j.assets, defaults=media.DEFAULTS,
-                                       out_dir=out_dir, mode="dry-run", emit=emit,
-                                       batch_id=j.row_id)
-            cost = rec["estimated_cost_usd"]
-            total += cost
+            rec = media.run_batch(j.assets, defaults=media.DEFAULTS, out_dir=out_dir,
+                                  mode="dry-run", emit=emit, batch_id=j.row_id)
+            total += rec["estimated_cost_usd"]
             result["rows"].append({"row_id": j.row_id, "kind": j.plan.kind,
                                    "aspect_ratio": j.plan.aspect_ratio,
                                    "assets": len(j.assets), "action": "would-generate",
-                                   "cost_usd": round(cost, 4)})
+                                   "cost_usd": round(rec["estimated_cost_usd"], 4)})
         result["estimated_cost_usd"] = round(total, 2)
-        result["note"] = ("dry-run cannot check Drive; every in-scope Draft row is "
-                          "listed as would-generate. Costs are the worst case "
-                          "(nothing skipped as already-present).")
+        result["note"] = ("dry-run: worst-case plan + cost only. Nothing is generated and "
+                          "the live sheet is not modified.")
         return result
 
     # --- mock / live: Drive-backed -------------------------------------------
-    drive = _drive_client(interactive=False)
     base_folder, quarter = _resolve_base_folder(drive, calendar_id, mode, quarter_folder)
     result["quarter_folder"] = quarter
     client = types = None
     if mode == "live":
         client, types = media.init_live_client()
+        from ..core.sheets import SheetsClient
+        writer = _SheetWriter(SheetsClient(config.credentials_path(), config.token_path()),
+                              sid, cal.ws.title, cal)
+    else:  # mock: openpyxl copy saved to a local *.mock.xlsx; live sheet untouched
+        writer = cal
 
     hints: set[str] = set()
     for job in in_scope:
@@ -187,26 +222,24 @@ def generate_media(calendar_id: str, version: int, mode: str = "dry-run", *,
             result["rows"].append({"row_id": job.row_id, "kind": job.plan.kind,
                                    "action": "skipped-existing", "link": existing,
                                    "cost_usd": est})
-            # sync the cell to the live Drive link + estimated cost for a skipped row
-            cal.write_result(job.row_index, link=existing, cost=est)
-            cal.write_note(job.row_index, "")  # clear any stale failure note
+            writer.write_result(job.row_index, link=existing, cost=est)
+            writer.write_note(job.row_index, "")  # clear any stale failure note
             continue
 
-        rec = media.run_batch(job.assets, defaults=media.DEFAULTS,
-                                   out_dir=out_dir, mode=mode, emit=emit,
-                                   batch_id=job.row_id, client=client, types=types)
+        rec = media.run_batch(job.assets, defaults=media.DEFAULTS, out_dir=out_dir,
+                              mode=mode, emit=emit, batch_id=job.row_id,
+                              client=client, types=types)
         hints.update(rec.get("hints", []))
         outputs = [o for o in rec["outputs"] if not o.get("dry_run")]
         if rec["errors"] or not outputs:
             result["failed"] += 1
             err = rec["errors"][0]["reason"] if rec["errors"] else "no output produced"
-            cal.write_result(job.row_index, link=FAILED_TEXT)
-            cal.write_note(job.row_index, f"generate failed: {err}")
+            writer.write_result(job.row_index, link=FAILED_TEXT)
+            writer.write_note(job.row_index, f"generate failed: {err}")
             result["rows"].append({"row_id": job.row_id, "kind": job.plan.kind,
                                    "action": "failed", "error": err})
             continue
 
-        # Create the carousel's group subfolder only now, at upload time.
         dest = (drive.ensure_path(parent, [job.group])
                 if job.plan.kind == "carousel" else parent)
         try:
@@ -216,32 +249,32 @@ def generate_media(calendar_id: str, version: int, mode: str = "dry-run", *,
             if hint:
                 hints.add(hint)
             result["failed"] += 1
-            cal.write_result(job.row_index, link=FAILED_TEXT)
-            cal.write_note(job.row_index, f"upload failed: {short}")
+            writer.write_result(job.row_index, link=FAILED_TEXT)
+            writer.write_note(job.row_index, f"upload failed: {short}")
             result["rows"].append({"row_id": job.row_id, "kind": job.plan.kind,
                                    "action": "upload-failed", "error": short})
             continue
 
         cost = round(sum(o.get("est_cost_usd", 0) for o in outputs), 4)
-        used_model = outputs[0].get("model")  # actual model (reflects any override)
-        cal.write_result(job.row_index, link=link, cost=cost, model=used_model)
-        cal.write_note(job.row_index, "")  # clear any stale failure note
+        writer.write_result(job.row_index, link=link, cost=cost,
+                            model=outputs[0].get("model"))  # actual model (reflects override)
+        writer.write_note(job.row_index, "")
         result["generated"] += 1
         result["estimated_cost_usd"] = round(result["estimated_cost_usd"] + cost, 4)
         result["rows"].append({"row_id": job.row_id, "kind": job.plan.kind,
                                "action": "generated", "link": link, "cost_usd": cost})
 
-    # write the updated sheet: the working file for live, a *.mock.xlsx copy for mock
-    if mode == "mock":
-        dest_path = path.with_name(path.stem + ".mock.xlsx")
-    else:
-        dest_path = path
-    cal.save(dest_path)
-    result["writeback_file"] = str(dest_path)
+    if mode == "live":
+        result["cells_written"] = writer.flush()
+        emit(f"updated {result['cells_written']} cells in the live sheet in place")
+    else:  # mock
+        dest_path = rules.calendar_dir() / f"{sheet_ops.live_sheet_name(calendar_id)}.mock.xlsx"
+        cal.save(dest_path)
+        result["writeback_file"] = str(dest_path)
     result["hints"] = sorted(hints)
     emit(f"\nDone [{mode}]. generated={result['generated']} "
          f"skipped-existing={result['skipped_existing']} failed={result['failed']} "
-         f"est.cost~${result['estimated_cost_usd']}. Sheet -> {dest_path.name}")
+         f"est.cost~${result['estimated_cost_usd']}.")
     return result
 
 
@@ -260,64 +293,5 @@ def _upload_row(drive, dest_folder: str, job, outputs: list[dict]) -> str | None
     return file_link
 
 
-def upload_calendar(calendar_id: str, version: int, mode: str = "dry-run", *,
-                    quarter_folder: str | None = None, emit=None) -> dict:
-    """Upload the local draft .xlsx into <quarter>/00_Calendar & Docs/."""
-    emit = emit or _stderr_emit
-    if mode not in ("dry-run", "mock", "live"):
-        raise ValueError(f"mode must be dry-run|mock|live, got {mode!r}")
-    path = _local_calendar_path(calendar_id, version)
-    if not path.exists():
-        raise FileNotFoundError(f"local calendar not found: {path}")
-
-    result = {"calendar_id": calendar_id, "version": version, "mode": mode,
-              "file": path.name, "action": None, "link": None}
-    if mode == "dry-run":
-        quarter = quarter_folder or rules.quarter_folder_for(calendar_id) or "<unresolved>"
-        result["action"] = "would-upload"
-        result["destination"] = f"{quarter}/{rules.SUBFOLDER_DOCS}/{path.name}"
-        emit(f"[dry-run] would upload {path.name} -> {result['destination']}")
-        return result
-
-    drive = _drive_client(interactive=False)
-    base_folder, quarter = _resolve_base_folder(drive, calendar_id, mode, quarter_folder)
-    docs = drive.ensure_path(base_folder, [rules.SUBFOLDER_DOCS])
-    up = drive.upload(path, docs)
-    link = drive.make_shareable(up["id"])
-    result.update(action="uploaded", link=link, quarter_folder=quarter,
-                  destination=f"{quarter}/{rules.SUBFOLDER_DOCS}/{path.name}")
-    emit(f"[{mode}] uploaded {path.name} -> {result['destination']}")
-    return result
-
-
-def download_latest(calendar_id: str, *, quarter_folder: str | None = None,
-                    dest_dir: Path | None = None, emit=None) -> dict:
-    """Download the highest-version draft for this calendar from Drive to local."""
-    emit = emit or _stderr_emit
-    drive = _drive_client(interactive=False)
-    root = rules.social_calendar_root_id()
-    if not root:
-        raise RuntimeError("SOCIAL_CALENDAR_ROOT_ID is not set.")
-    quarter = quarter_folder or rules.quarter_folder_for(calendar_id)
-    if not quarter:
-        raise RuntimeError(f"Could not derive a quarter folder from {calendar_id!r}; "
-                           "pass quarter_folder.")
-    docs = drive.find_folder_path(root, [quarter, rules.SUBFOLDER_DOCS])
-    if not docs:
-        raise FileNotFoundError(f"{quarter}/{rules.SUBFOLDER_DOCS} not found on Drive.")
-
-    best = None  # (version, file dict)
-    for f in drive.list_children(docs):
-        parsed = rules.parse_calendar_filename(f["name"])
-        if parsed and parsed[0] == calendar_id:
-            if best is None or parsed[1] > best[0]:
-                best = (parsed[1], f)
-    if not best:
-        raise FileNotFoundError(f"no {rules.CALENDAR_PREFIX}_{calendar_id}_v*.xlsx "
-                                f"in {quarter}/{rules.SUBFOLDER_DOCS}.")
-    version, f = best
-    dest = (Path(dest_dir) if dest_dir else rules.calendar_dir()) / f["name"]
-    drive.download_file(f["id"], dest)
-    emit(f"downloaded {f['name']} (v{version}) -> {dest}")
-    return {"calendar_id": calendar_id, "version": version, "file": f["name"],
-            "path": str(dest)}
+# upload / download / snapshot of the calendar live in social.sheet_ops (they operate
+# on the living Google Sheet, not local .xlsx files).

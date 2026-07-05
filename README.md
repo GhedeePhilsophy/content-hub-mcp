@@ -4,16 +4,17 @@ MCP server backing the **Content Hub** Cowork workflows for The Ghedee Centre.
 Planned to cover three content types — **Blog Posts**, **Social Media Calendar**,
 **Emails**. **Phase 1 (this build) is the Social Calendar workflow only.**
 
-The Social Calendar is an Excel workbook Cowork produces
-(`Ghedee_Social_Calendar_{CalendarID}_v{N}.xlsx`, e.g.
-`Ghedee_Social_Calendar_Q3_2026_v6.xlsx`). The server reads that sheet as the
-**source of truth** and offers three tools:
+The canonical calendar is a **living Google Sheet** (`Ghedee_Social_Calendar_<id>`,
+e.g. `Ghedee_Social_Calendar_Q3_2026`) in `00_Calendar & Docs`, which the team edits
+in place. The tools:
 
 | Tool | What it does |
 |---|---|
-| `social_generate_media` | Read Draft rows → generate the missing AI images/videos → upload to Drive (route-by-type) → write each Drive link + cost back into the sheet. |
-| `social_upload_calendar` | Upload a local draft `.xlsx` to its quarter's `00_Calendar & Docs/` on Drive. |
-| `social_download_latest` | Download the newest draft for a calendar from Drive to the local working folder. |
+| `social_generate_media` | Read the live sheet's Draft rows → generate the missing AI images/videos → upload to Drive → write each link / cost / model / notes back **into the live sheet in place** (Sheets API — no download/re-upload). |
+| `social_upload_calendar` | Create the living Google Sheet from a local `Ghedee_Social_Calendar_<id>_v<version>.xlsx` (`--replace` to overwrite). |
+| `social_download_calendar` | Export the living sheet to a local `.xlsx` so Cowork can ingest current edits. |
+| `social_snapshot_calendar` | Export the living sheet to the next `_v<N>.xlsx` on Drive (a frozen approval-round record). |
+| `social_build_preview` | Build an HTML review page from the live sheet and publish it next to the calendar as `Ghedee_Social_Calendar_<id>_preview.html`. |
 
 Metricool publishing is planned for a later phase.
 
@@ -84,42 +85,45 @@ pip install -r requirements.txt
 cp .env.example .env        # fill in GEMINI_API_KEY + SOCIAL_CALENDAR_ROOT_ID
 ```
 
-**Drive auth (one-time, interactive):** create a Desktop-app OAuth client in
-Google Cloud Console → **APIs & Services → Credentials**, enable the **Drive API**,
-save the JSON as `credentials.json`. Authorise once from a terminal so the browser
-consent can run and cache `token.json`:
+**Google auth (one-time, interactive):** create a Desktop-app OAuth client in
+Google Cloud Console → **APIs & Services → Credentials**, enable both the **Drive
+API** and the **Google Sheets API**, save the client JSON as `credentials.json`.
+Authorise once so the browser consent can run and cache `token.json`:
 
 ```bash
-python -m content_hub.cli auth        # opens the browser, caches token.json
+python -m content_hub.cli auth        # grants Drive + Sheets, caches token.json
 ```
 
 After that every headless run (server, `mock`, `live`) reuses `token.json`.
 **Never commit** `credentials.json`, `token.json`, or `.env`.
 
-## Manual runs (do this before deploying the server)
-
-Walk each operation dry-run → mock → live. Commands are namespaced by workflow
-(`social <operation>`), mirroring the `social_<operation>` MCP tool names:
+## The calendar lifecycle
 
 ```bash
-# Plan + total cost, no spend, no Drive:
-python -m content_hub.cli social generate Q3_2026 6 --mode dry-run
+# 1. Seed the living Google Sheet from a local Cowork draft (one-time):
+python -m content_hub.cli social upload Q3_2026 8       # ..._v8.xlsx -> living sheet
 
-# Full pipeline with placeholder files, safe mock Drive + a *.mock.xlsx copy:
-python -m content_hub.cli social generate Q3_2026 6 --mode mock
+# 2. Generate media and write links/cost/model/notes back INTO the live sheet:
+python -m content_hub.cli social generate Q3_2026 --mode dry-run   # plan + cost only
+python -m content_hub.cli social generate Q3_2026 --mode mock      # rehearse (live sheet untouched)
+python -m content_hub.cli social generate Q3_2026 --mode live      # spends; edits the sheet in place
 
-# Real generation + upload + write-back (spends credits):
-python -m content_hub.cli social generate Q3_2026 6 --mode live
+# 3. Review page from the live sheet, published beside the calendar on Drive:
+python -m content_hub.cli social preview Q3_2026
 
-# Other operations:
-python -m content_hub.cli social upload   Q3_2026 6 --mode live
-python -m content_hub.cli social download Q3_2026
+# 4. Pull the live sheet down for Cowork, or freeze a versioned snapshot:
+python -m content_hub.cli social download Q3_2026      # -> Ghedee_Social_Calendar_Q3_2026.xlsx
+python -m content_hub.cli social snapshot Q3_2026      # -> next _v<N>.xlsx on Drive
 
-# Options: --only image|video   --quarter-folder "Q3 2026"
+# generate options: --only image|video   --video-model <id>   --video-duration 30
+# common option:    --quarter-folder "Q3 2026"  (when the Calendar ID isn't a quarter)
 ```
 
-`--quarter-folder` is needed only when the Calendar ID isn't a quarter (e.g. a
-month or a date range) and so can't be mapped to a `Q# YYYY` folder automatically.
+`generate` reads the **living Google Sheet** and, in `live` mode, writes only the
+machine-owned columns (Generated Asset Link / Est. Cost / AI Model / Notes) **in
+place** via the Sheets API — so a teammate editing captions or Status at the same
+time is never clobbered. `dry-run` touches nothing; `mock` writes a local
+`*.mock.xlsx` instead of the live sheet.
 
 ## Run as an MCP server
 
