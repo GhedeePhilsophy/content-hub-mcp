@@ -173,19 +173,16 @@ class _DriveSource:
     Row ID prefix — mirrors the generate workflow's existence check. Each type folder
     is listed once; image bytes are downloaded on demand and inlined."""
 
-    def __init__(self, drive, calendar_id: str, quarter_folder: str | None = None):
+    def __init__(self, drive, calendar_id: str):
         self.drive = drive
         root = rules.social_calendar_root_id()
         if not root:
             raise RuntimeError("SOCIAL_CALENDAR_ROOT_ID is not set.")
-        quarter = quarter_folder or rules.quarter_folder_for(calendar_id)
-        if not quarter:
-            raise RuntimeError(f"Could not derive a quarter folder from {calendar_id!r}; "
-                               "pass quarter_folder.")
+        folder = rules.calendar_folder(calendar_id)
         self.calendar_id = calendar_id
-        base = drive.find_folder_path(root, [quarter])
+        base = drive.find_folder_path(root, [folder])
         if not base:
-            raise FileNotFoundError(f"Drive folder {quarter!r} not found under the "
+            raise FileNotFoundError(f"Drive folder {folder!r} not found under the "
                                     "Social Calendar root.")
         self.images = self._list(base, rules.SUBFOLDER_IMAGES)
         self.videos = self._list(base, rules.SUBFOLDER_VIDEO)
@@ -476,7 +473,7 @@ def _grid_cell(job, assets: dict, cache=None) -> str:
 
 # --- page assembly ---------------------------------------------------------
 def build_preview(calendar_id: str, version: int | None = None, *,
-                  out_path: Path | None = None, quarter_folder: str | None = None,
+                  out_path: Path | None = None,
                   no_cache: bool = False, publish: bool = True, emit=None) -> dict:
     """Build the HTML review page from Google Drive. With no ``version`` it reads the
     LIVING Google Sheet (current edits); a version reads that .xlsx snapshot instead.
@@ -500,7 +497,7 @@ def build_preview(calendar_id: str, version: int | None = None, *,
     from ..core.drive import DriveClient
     client = DriveClient(config.credentials_path(), config.token_path(),
                          allow_interactive=False)
-    drive_source = _DriveSource(client, calendar_id, quarter_folder)
+    drive_source = _DriveSource(client, calendar_id)
     label, xlsx_bytes, sheet_link = drive_source.fetch_calendar(version)
     emit(f"calendar: {calendar_id} ({label}) from Drive")
 

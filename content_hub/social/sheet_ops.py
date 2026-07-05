@@ -31,18 +31,15 @@ def live_sheet_name(calendar_id: str) -> str:
     return f"{rules.CALENDAR_PREFIX}_{calendar_id}"
 
 
-def _docs_folder(drive: DriveClient, calendar_id: str, quarter_folder: str | None) -> str:
+def _docs_folder(drive: DriveClient, calendar_id: str) -> str:
     root = rules.social_calendar_root_id()
     if not root:
         raise RuntimeError("SOCIAL_CALENDAR_ROOT_ID is not set.")
-    quarter = quarter_folder or rules.quarter_folder_for(calendar_id)
-    if not quarter:
-        raise RuntimeError(f"Could not derive a quarter folder from {calendar_id!r}; "
-                           "pass quarter_folder.")
-    base = drive.find_folder_path(root, [quarter])
+    folder = rules.calendar_folder(calendar_id)
+    base = drive.find_folder_path(root, [folder])
     docs = drive.find_folder_path(base, [rules.SUBFOLDER_DOCS]) if base else None
     if not docs:
-        raise FileNotFoundError(f"{quarter}/{rules.SUBFOLDER_DOCS} not found on Drive.")
+        raise FileNotFoundError(f"{folder}/{rules.SUBFOLDER_DOCS} not found on Drive.")
     return docs
 
 
@@ -59,8 +56,58 @@ def _max_snapshot_version(drive: DriveClient, docs: str, calendar_id: str) -> in
     return best
 
 
-def upload(calendar_id: str, version: int, *, quarter_folder: str | None = None,
-           replace: bool = False, emit=None) -> dict:
+def create(calendar_id: str, *, dest_dir=None, replace: bool = False,
+           tab_title: str | None = None, emit=None) -> dict:
+    """Initialise a brand-new Social Calendar and return a shell .xlsx for Cowork.
+
+    Does the Drive setup — creates the calendar folder under the Social Calendar root
+    (named by the Calendar ID verbatim) and its subfolders (00_Calendar & Docs,
+    02_AI Visuals/Images + /Video, 03_Carousels) — then creates the living Google Sheet
+    as an empty, styled header-only shell in 00_Calendar & Docs and writes that same
+    shell out to a local Ghedee_Social_Calendar_<id>_v1.xlsx for Cowork to fill in.
+
+    ``calendar_id`` may be a quarter (Q3_2026), a date range, or a single day — it is just
+    the folder name. Refuses if a living sheet already exists unless replace=True (which
+    trashes the old one first)."""
+    from .calendar import DEFAULT_TAB_TITLE, new_shell_bytes
+    emit = emit or _stderr
+    root = rules.social_calendar_root_id()
+    if not root:
+        raise RuntimeError("SOCIAL_CALENDAR_ROOT_ID is not set — point it at the "
+                           "'Social Calendar' Drive folder id.")
+    drive = _drive()
+    folder = rules.calendar_folder(calendar_id)
+    base = drive.find_or_create_folder(folder, root)
+    docs = drive.ensure_path(base, [rules.SUBFOLDER_DOCS])
+    # Pre-create the asset folders generate later routes uploads into.
+    drive.ensure_path(base, list(rules.SUBFOLDER_IMAGES))
+    drive.ensure_path(base, list(rules.SUBFOLDER_VIDEO))
+    drive.ensure_path(base, list(rules.SUBFOLDER_CAROUSELS))
+
+    existing = find_live_sheet(drive, docs, calendar_id)
+    if existing and not replace:
+        raise RuntimeError(
+            f"A live sheet already exists: {existing['name']} ({existing.get('webViewLink')}). "
+            "Use `download` to pull it local, or pass replace=True to recreate an empty shell.")
+    if existing and replace:
+        drive.trash(existing["id"])
+
+    shell = new_shell_bytes(tab_title or DEFAULT_TAB_TITLE)
+    name = live_sheet_name(calendar_id)
+    sheet = drive.upload_as_google_sheet(shell, name, docs)
+    drive.make_shareable(sheet["id"])
+
+    dest = (Path(dest_dir) if dest_dir else rules.calendar_dir()) \
+        / rules.calendar_filename(calendar_id, 1)
+    dest.write_bytes(shell)
+    emit(f"created calendar '{folder}': live sheet '{name}' -> {sheet['link']}; "
+         f"shell .xlsx -> {dest}")
+    return {"calendar_id": calendar_id, "folder": folder, "live_sheet": name,
+            "id": sheet["id"], "link": sheet["link"], "path": str(dest),
+            "replaced": bool(existing)}
+
+
+def upload(calendar_id: str, version: int, *, replace: bool = False, emit=None) -> dict:
     """Create the living Google Sheet from the local Ghedee_Social_Calendar_<id>_v<version>.xlsx.
     Refuses if a live sheet already exists (editing happens in place now) unless replace=True,
     which trashes the old one and recreates it from this .xlsx."""
@@ -69,7 +116,7 @@ def upload(calendar_id: str, version: int, *, quarter_folder: str | None = None,
     if not local.exists():
         raise FileNotFoundError(f"local calendar not found: {local}")
     drive = _drive()
-    docs = _docs_folder(drive, calendar_id, quarter_folder)
+    docs = _docs_folder(drive, calendar_id)
     existing = find_live_sheet(drive, docs, calendar_id)
     if existing and not replace:
         raise RuntimeError(
@@ -87,13 +134,12 @@ def upload(calendar_id: str, version: int, *, quarter_folder: str | None = None,
             "id": res["id"], "link": res["link"], "replaced": bool(existing)}
 
 
-def download(calendar_id: str, *, dest_dir=None, quarter_folder: str | None = None,
-             emit=None) -> dict:
+def download(calendar_id: str, *, dest_dir=None, emit=None) -> dict:
     """Export the living Google Sheet to a local .xlsx (Ghedee_Social_Calendar_<id>.xlsx)
     so Cowork can ingest the current edits."""
     emit = emit or _stderr
     drive = _drive()
-    docs = _docs_folder(drive, calendar_id, quarter_folder)
+    docs = _docs_folder(drive, calendar_id)
     live = find_live_sheet(drive, docs, calendar_id)
     if not live:
         raise FileNotFoundError(f"no live sheet '{live_sheet_name(calendar_id)}' on Drive; "
@@ -105,11 +151,11 @@ def download(calendar_id: str, *, dest_dir=None, quarter_folder: str | None = No
     return {"calendar_id": calendar_id, "path": str(dest), "link": live.get("webViewLink")}
 
 
-def snapshot(calendar_id: str, *, quarter_folder: str | None = None, emit=None) -> dict:
+def snapshot(calendar_id: str, *, emit=None) -> dict:
     """Export the living Google Sheet to the next versioned .xlsx snapshot on Drive."""
     emit = emit or _stderr
     drive = _drive()
-    docs = _docs_folder(drive, calendar_id, quarter_folder)
+    docs = _docs_folder(drive, calendar_id)
     live = find_live_sheet(drive, docs, calendar_id)
     if not live:
         raise FileNotFoundError(f"no live sheet '{live_sheet_name(calendar_id)}' on Drive; "
