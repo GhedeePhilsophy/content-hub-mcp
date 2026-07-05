@@ -360,6 +360,19 @@ def _status_kind(status: str) -> str:
     return "other"
 
 
+def _is_reel(job) -> bool:
+    """A reel = a post the team formats as 'Reel' (the vertical short-form clips —
+    the recorded-Wiah reels on TikTok / IG Reels). Keyed on the Format column, the
+    sheet's own categorization; the 16:9 AI hero videos are feed posts, not reels."""
+    return (job.fmt or "").strip().lower() == "reel"
+
+
+def _is_carousel(job) -> bool:
+    """A carousel = Format 'Carousel' exactly (multi-slide), matching rules.plan_visual —
+    the mixed 'Single image / carousel' string is a single feed image, not a carousel."""
+    return (job.fmt or "").strip().lower() == "carousel"
+
+
 def _status_pill(status: str) -> str:
     # color comes from the parent card's st-{kind} custom properties
     label = _esc(status.strip()) if status and status.strip() else "—"
@@ -439,7 +452,9 @@ def _card(job, assets: dict, cache=None, sheet_link: str | None = None) -> str:
         + (f'<div class="chook">{_esc(job.hook)}</div>' if job.hook else "")
         + actions_html + '</div>')
     return (f'<article class="card {key} st-{kind}" data-platform="{key}" '
-            f'data-status="{kind}">{head}<div class="frame">{body}</div></article>')
+            f'data-status="{kind}" data-reel="{1 if _is_reel(job) else 0}" '
+            f'data-carousel="{1 if _is_carousel(job) else 0}">'
+            f'{head}<div class="frame">{body}</div></article>')
 
 
 def _grid_cell(job, assets: dict, cache=None) -> str:
@@ -543,9 +558,13 @@ def build_preview(calendar_id: str, version: int | None = None, *,
 
     emit(f"preview: {len(jobs)} posts, {scount['ok']} approved / {scount['draft']} draft "
          f"/ {scount['other']} other")
+    rcount = sum(1 for j in jobs if _is_reel(j))
+    ccount = sum(1 for j in jobs if _is_carousel(j))
     chips = ('<div class="chips"><button class="chip active" data-f="all">All '
              f'<b>{len(jobs)}</b></button>'
              f'<button class="chip" data-f="instagram">Instagram <b>{counts["instagram"]}</b></button>'
+             f'<button class="chip" data-f="reel">{SVG["reel"]} Reels <b>{rcount}</b></button>'
+             f'<button class="chip" data-f="carousel">{SVG["stack"]} Carousels <b>{ccount}</b></button>'
              f'<button class="chip" data-f="facebook">Facebook <b>{counts["facebook"]}</b></button>'
              f'<button class="chip" data-f="tiktok">TikTok <b>{counts["tiktok"]}</b></button>'
              '<span class="chip-sep"></span>'
@@ -630,6 +649,7 @@ header.top .sub{color:var(--muted);font-size:13px;text-transform:uppercase;lette
 .chip{cursor:pointer;border:1px solid var(--line);background:var(--surface);color:var(--ink);
   border-radius:999px;padding:6px 14px;font-size:13px;font-weight:600;display:inline-flex;gap:7px;align-items:center}
 .chip b{color:var(--muted);font-weight:600}
+.chip svg{width:13px;height:13px;flex:none}
 .chip.active{background:var(--forest);color:var(--ivory);border-color:var(--forest)}
 .chip.active b{color:var(--gold)}
 :root[data-theme="dark"] .chip.active,@media(prefers-color-scheme:dark){.chip.active{background:var(--gold);color:#17281E;border-color:var(--gold)}.chip.active b{color:#17281E}}
@@ -825,6 +845,12 @@ function statusMatch(s){
   if(flt.s==='needs') return s!=='ok';
   return s===flt.s;
 }
+function viewMatch(c){
+  if(flt.f==='all') return true;
+  if(flt.f==='reel') return c.dataset.reel==='1';
+  if(flt.f==='carousel') return c.dataset.carousel==='1';
+  return c.dataset.platform===flt.f;
+}
 function applyFilter(){
   var grid=document.getElementById('grid'), feed=document.getElementById('feed');
   var inGrid = flt.f==='grid';
@@ -836,7 +862,7 @@ function applyFilter(){
     return;
   }
   document.querySelectorAll('.card').forEach(function(c){
-    var vis=(flt.f==='all'||c.dataset.platform===flt.f) && statusMatch(c.dataset.status);
+    var vis=viewMatch(c) && statusMatch(c.dataset.status);
     c.classList.toggle('hide', !vis);
   });
   document.querySelectorAll('.week').forEach(function(w){
