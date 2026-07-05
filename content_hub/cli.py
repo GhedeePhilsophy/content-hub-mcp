@@ -29,6 +29,7 @@ import sys
 
 from .core import config
 from . import social
+from .social import preview
 
 
 def _print_result(res: dict) -> None:
@@ -86,6 +87,19 @@ def _register_social(workflows) -> None:
     d.add_argument("--quarter-folder")
     d.set_defaults(func=lambda a: social.download_latest(
         a.calendar_id, quarter_folder=a.quarter_folder))
+
+    p2 = ops.add_parser("preview", help="Build a self-contained HTML review page of the posts.")
+    p2.add_argument("calendar_id")
+    p2.add_argument("version", type=int, nargs="?", default=None,
+                    help="Draft version to preview; omit to use the latest on Drive.")
+    p2.add_argument("--out", help="Output .html path (default: alongside the calendar).")
+    p2.add_argument("--quarter-folder", help="Override the derived quarter folder on "
+                    "Drive, e.g. 'Q3 2026'.")
+    p2.add_argument("--no-cache", action="store_true",
+                    help="Re-download and re-encode every asset (ignore the thumbnail cache).")
+    p2.set_defaults(func=lambda a: preview.build_preview(
+        a.calendar_id, a.version, out_path=a.out,
+        quarter_folder=a.quarter_folder, no_cache=a.no_cache))
 
 
 def main(argv: list[str] | None = None) -> int:

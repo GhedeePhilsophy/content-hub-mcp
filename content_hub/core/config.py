@@ -58,6 +58,12 @@ def brand_font_path() -> str | None:
     return os.environ.get("BRAND_FONT_PATH")
 
 
+def brand_avatar_path() -> Path:
+    """Profile photo used as the avatar in the review preview. Override BRAND_AVATAR;
+    defaults to the bundled assets/avatar.jpg (falls back to a monogram if missing)."""
+    return Path(os.environ.get("BRAND_AVATAR") or (REPO_ROOT / "assets" / "avatar.jpg"))
+
+
 def video_model_override() -> str | None:
     """Default video model override for every run (env VIDEO_MODEL). Overrides the
     sheet's AI Model; the per-run --video-model flag still beats this."""

@@ -91,6 +91,32 @@ def social_upload_calendar(calendar_id: str, version: int, mode: str = "dry-run"
 
 
 @mcp.tool()
+def social_build_preview(calendar_id: str, version: int | None = None,
+                         quarter_folder: str | None = None,
+                         no_cache: bool = False) -> dict:
+    """Build a self-contained HTML review page of a Social Calendar's posts, each
+    rendered as a mockup in its platform's chrome (Instagram / Facebook / TikTok),
+    grouped by week, plus an Instagram profile-grid view. Both the calendar workbook
+    and every post asset are read from Google Drive (the shared, actively-edited
+    copy), downscaled, and inlined — a single portable .html file for review/approval.
+    Video posts show the clip's first frame.
+
+    Args:
+        calendar_id: e.g. 'Q3_2026'.
+        version: the draft version number (e.g. 8); omit to use the latest on Drive.
+        quarter_folder: override the derived quarter folder on Drive.
+        no_cache: re-download and re-encode every asset, ignoring the thumbnail cache
+            (which otherwise reuses assets whose Drive md5 is unchanged).
+
+    Returns the output path and post/week/image counts.
+    """
+    from content_hub.social import preview
+    return preview.build_preview(calendar_id, version,
+                                 quarter_folder=quarter_folder, no_cache=no_cache,
+                                 emit=_emit)
+
+
+@mcp.tool()
 def social_download_latest(calendar_id: str,
                            quarter_folder: str | None = None) -> dict:
     """Download the highest-version Social Calendar draft for this calendar from

@@ -179,6 +179,18 @@ class DriveClient:
                 _, done = downloader.next_chunk()
         return dest_path
 
+    def download_bytes(self, file_id: str) -> bytes:
+        """Download a file's content into memory (used to inline assets in a preview)."""
+        import io
+        from googleapiclient.http import MediaIoBaseDownload
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(
+            buf, self.svc.files().get_media(fileId=file_id, supportsAllDrives=True))
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+
     def list_children(self, parent_id: str) -> list[dict]:
         q = f"trashed=false and '{parent_id}' in parents"
-        return self._list(q, fields="files(id,name,mimeType)")
+        return self._list(q, fields="files(id,name,mimeType,md5Checksum,modifiedTime,size)")

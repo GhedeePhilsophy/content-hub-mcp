@@ -9,6 +9,10 @@ openpyxl>=3.1.0
 # Text overlay on generated carousel slides
 pillow>=10.0.0
 
+# First-frame posters for video rows in the review preview (bundles ffmpeg)
+imageio>=2.30.0
+imageio-ffmpeg>=0.4.9
+
 # Media generation (images: Nano Banana, video: Veo)
 google-genai>=1.0.0
 
