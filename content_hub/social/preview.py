@@ -351,12 +351,15 @@ def _avatar(cls: str = "") -> str:
 
 
 def _status_kind(status: str) -> str:
-    """Spreadsheet Status -> color kind: Draft=yellow, Approved=green, else red."""
+    """Spreadsheet Status -> color kind: Draft=yellow, Approved=green,
+    Awaiting Asset=gray, else red."""
     s = (status or "").strip().lower()
     if s == "draft":
         return "draft"
     if s == "approved":
         return "ok"
+    if s == "awaiting asset":
+        return "await"
     return "other"
 
 
@@ -527,7 +530,7 @@ def build_preview(calendar_id: str, version: int | None = None, *,
     weeks: dict[str, list] = {}
     labels: dict[str, str] = {}
     counts = {"instagram": 0, "facebook": 0, "tiktok": 0}
-    scount = {"draft": 0, "ok": 0, "other": 0}
+    scount = {"draft": 0, "ok": 0, "await": 0, "other": 0}
     n_asset = 0
     for j in jobs:
         key, label = _week_of(j.date)
@@ -557,7 +560,7 @@ def build_preview(calendar_id: str, version: int | None = None, *,
                         f'<div class="grid">{"".join(cards)}</div></section>')
 
     emit(f"preview: {len(jobs)} posts, {scount['ok']} approved / {scount['draft']} draft "
-         f"/ {scount['other']} other")
+         f"/ {scount['await']} awaiting asset / {scount['other']} other")
     rcount = sum(1 for j in jobs if _is_reel(j))
     ccount = sum(1 for j in jobs if _is_carousel(j))
     chips = ('<div class="chips"><button class="chip active" data-f="all">All '
@@ -577,7 +580,11 @@ def build_preview(calendar_id: str, version: int | None = None, *,
         f'<button class="chip st-ok" data-s="ok"><i class="sdot"></i>Approved '
         f'<b>{scount["ok"]}</b></button>'
         f'<button class="chip st-other" data-s="other"><i class="sdot"></i>Other '
-        f'<b>{scount["other"]}</b></button><span class="chip-sep"></span>'
+        f'<b>{scount["other"]}</b></button>'
+        f'<button class="chip st-await" data-s="await"><i class="sdot"></i>Awaiting Asset '
+        f'<b>{scount["await"]}</b></button><span class="chip-sep"></span>'
+        f'<button class="chip delivered" data-s="delivered">✓ Asset Delivered '
+        f'<b>{len(jobs) - scount["await"]}</b></button>'
         f'<button class="chip needs" data-s="needs">⚠ Needs review '
         f'<b>{scount["draft"] + scount["other"]}</b></button></div>')
 
@@ -656,9 +663,12 @@ header.top .sub{color:var(--muted);font-size:13px;text-transform:uppercase;lette
 /* status filter chips (second row) */
 .chips.status{margin:-14px 0 26px}
 .chip .sdot{width:10px;height:10px;border-radius:3px;background:var(--sc-bright);display:inline-block}
-.chip.st-draft.active,.chip.st-ok.active,.chip.st-other.active{
+.chip.st-draft.active,.chip.st-ok.active,.chip.st-other.active,.chip.st-await.active{
   background:var(--sc-bright);border-color:var(--sc-bright);color:var(--sc-ink)}
-.chip.st-draft.active b,.chip.st-ok.active b,.chip.st-other.active b{color:var(--sc-ink);opacity:.75}
+.chip.st-draft.active b,.chip.st-ok.active b,.chip.st-other.active b,.chip.st-await.active b{color:var(--sc-ink);opacity:.75}
+.chip.delivered{border-color:#2A9D8F;color:#1f7a70;font-weight:700}
+.chip.delivered.active{background:#2A9D8F;border-color:#2A9D8F;color:#062e2a}
+.chip.delivered.active b{color:#062e2a;opacity:.75}
 .chip.needs{border-color:#E3AE17;color:#9a6f10;font-weight:700}
 .chip.needs.active{background:#F5C518;border-color:#F5C518;color:#4a3800}
 .chip.needs.active b{color:#4a3800;opacity:.75}
@@ -680,9 +690,10 @@ header.top .sub{color:var(--muted);font-size:13px;text-transform:uppercase;lette
 .wk-bar{width:110px;height:6px;border-radius:99px;background:var(--line);overflow:hidden}
 .wk-bar i{display:block;height:100%;background:#1FC24C;border-radius:99px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:22px;align-items:start}
-/* per-status color tokens (Draft=yellow, Approved=green, anything else=red) */
+/* per-status color tokens (Draft=yellow, Approved=green, Awaiting Asset=gray, else red) */
 .st-draft{--sc:#E3AE17;--sc-bright:#F5C518;--sc-tint:rgba(245,197,24,.18);--sc-ink:#4a3800}
 .st-ok{--sc:#1FA64A;--sc-bright:#1FC24C;--sc-tint:rgba(31,194,76,.15);--sc-ink:#fff}
+.st-await{--sc:#7B828C;--sc-bright:#9AA0A9;--sc-tint:rgba(123,130,140,.16);--sc-ink:#fff}
 .st-other{--sc:#DE2F22;--sc-bright:#F1362C;--sc-tint:rgba(241,54,44,.14);--sc-ink:#fff}
 /* each post is a box framed in its status color, with a prominent header on top */
 .card{display:flex;flex-direction:column;border:3px solid var(--sc);border-radius:14px;
@@ -812,6 +823,24 @@ a.ph-icon.play{text-decoration:none;cursor:pointer}
 .gph-none{background:repeating-linear-gradient(45deg,#20302a,#20302a 8px,#1a2823 8px,#1a2823 16px)}
 @media(max-width:520px){#grid .profile{gap:16px}.avatar.lg{width:60px;height:60px;font-size:28px}}
 footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
+/* floating "current week/month" pill (upper-left) + back-to-top button (lower-right) */
+.wknow{position:fixed;left:20px;top:16px;z-index:60;background:var(--surface);
+  border:1px solid var(--line);color:var(--ink);
+  font:700 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:8px 13px;
+  border-radius:999px;box-shadow:0 2px 12px rgba(20,30,22,.16);white-space:nowrap;
+  max-width:46vw;overflow:hidden;text-overflow:ellipsis;
+  opacity:0;transform:translateY(-10px);transition:opacity .2s,transform .2s;pointer-events:none}
+.wknow.show{opacity:1;transform:none}
+.totop{position:fixed;right:20px;bottom:20px;z-index:60;display:flex;align-items:center;gap:10px;
+  opacity:0;transform:translateY(10px);transition:opacity .2s,transform .2s;pointer-events:none}
+.totop.show{opacity:1;transform:none;pointer-events:auto}
+.totop-btn{width:44px;height:44px;border-radius:50%;border:none;cursor:pointer;flex:none;
+  background:var(--forest);color:var(--ivory);box-shadow:0 3px 12px rgba(20,30,22,.28);
+  display:grid;place-items:center;transition:background .15s,color .15s}
+.totop-btn svg{width:20px;height:20px}
+.totop-btn:hover{background:var(--gold);color:#17281E}
+@media(prefers-color-scheme:dark){.totop-btn{background:var(--gold);color:#17281E}}
+:root[data-theme="dark"] .totop-btn{background:var(--gold);color:#17281E}
 </style>
 <div class="wrap">
   <header class="top"><h1>Ghedee Social Calendar</h1><span class="sub">{{SUBTITLE}}</span></header>
@@ -820,6 +849,13 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
   <div id="feed">{{SECTIONS}}</div>
   {{GRID}}
   <footer>Draft review · nothing here is published. Approve in the calendar, not this page.</footer>
+</div>
+<div class="wknow" id="totop-wk"></div>
+<div class="totop" id="totop">
+  <button class="totop-btn" id="totop-btn" aria-label="Back to top" title="Back to top">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+      stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+  </button>
 </div>
 <script>
 document.querySelectorAll('.media.carousel').forEach(function(c){
@@ -843,6 +879,7 @@ var flt={f:'all', s:'all'};
 function statusMatch(s){
   if(flt.s==='all') return true;
   if(flt.s==='needs') return s!=='ok';
+  if(flt.s==='delivered') return s!=='await';
   return s===flt.s;
 }
 function viewMatch(c){
@@ -867,6 +904,7 @@ function applyFilter(){
   });
   document.querySelectorAll('.week').forEach(function(w){
     w.classList.toggle('hide', !w.querySelector('.card:not(.hide)')); });
+  if(window.__syncTop) window.__syncTop();
 }
 document.querySelectorAll('.chip[data-f]').forEach(function(btn){
   btn.addEventListener('click',function(){
@@ -897,5 +935,37 @@ document.querySelectorAll('.act[data-copy]').forEach(function(b){
     });
   });
 });
+// back-to-top button + live "current week/month" indicator
+(function(){
+  var fab=document.getElementById('totop'); if(!fab) return;
+  var wkEl=document.getElementById('totop-wk'), btn=document.getElementById('totop-btn'),
+      feed=document.getElementById('feed');
+  btn.addEventListener('click',function(){window.scrollTo({top:0,behavior:'smooth'});});
+  function currentWeek(){
+    // the last visible week whose top has scrolled above the reading line is "current"
+    var secs=feed.querySelectorAll('.week:not(.hide)'), cur=null;
+    for(var i=0;i<secs.length;i++){
+      if(secs[i].getBoundingClientRect().top<=140) cur=secs[i]; else break;
+    }
+    if(!cur && secs.length) cur=secs[0];
+    var lbl=cur && cur.querySelector('.wk-label');
+    return lbl ? lbl.textContent : '';
+  }
+  function update(){
+    var inGrid=feed.classList.contains('hide');
+    var scrolled=window.scrollY>360;
+    fab.classList.toggle('show', scrolled);
+    var w=inGrid ? '' : currentWeek();
+    wkEl.textContent=w;
+    wkEl.classList.toggle('show', scrolled && !!w);
+  }
+  window.__syncTop=update;
+  var pending=false;
+  window.addEventListener('scroll',function(){
+    if(pending) return; pending=true;
+    requestAnimationFrame(function(){pending=false; update();});
+  },{passive:true});
+  update();
+})();
 </script>
 """
