@@ -171,10 +171,45 @@ def estimate_cost(assets: list[dict], defaults: dict | None = None) -> float:
     return round(total, 4)
 
 
+# --- aspect ratios ----------------------------------------------------------
+# What gemini-2.5-flash-image accepts directly (per the SDK's ImageConfig docs).
+SUPPORTED_IMAGE_RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"}
+# Desired ratios the model can't render -> (generate at this ratio, then center-crop
+# to the desired one). 4:5 (Instagram's tallest) is cropped from a 3:4 render.
+_CROP_SOURCE = {"4:5": "3:4", "5:4": "4:3"}
+
+
+def resolve_ratio(desired: str | None) -> tuple[str | None, str | None]:
+    """Return (generation_ratio, crop_to). crop_to is None when the model can render
+    the desired ratio directly; otherwise we generate wider/taller and crop."""
+    if not desired or desired in SUPPORTED_IMAGE_RATIOS:
+        return desired, None
+    src = _CROP_SOURCE.get(desired)
+    return (src, desired) if src else (desired, None)
+
+
+def _center_crop_file(path: Path, ratio: str) -> None:
+    """Center-crop the image at ``path`` to ``ratio`` (e.g. '4:5'), in place."""
+    from PIL import Image
+    tw, th = (int(x) for x in ratio.split(":"))
+    target = tw / th
+    img = Image.open(path).convert("RGB")
+    w, h = img.size
+    if abs(w / h - target) < 0.01:
+        return
+    if w / h > target:                       # too wide -> trim width
+        nw = max(1, round(h * target)); x = (w - nw) // 2
+        img = img.crop((x, 0, x + nw, h))
+    else:                                    # too tall -> trim height
+        nh = max(1, round(w / target)); y = (h - nh) // 2
+        img = img.crop((0, y, w, y + nh))
+    img.save(path)
+
+
 # --- placeholder generators for mock mode (no deps, no API, no key) ---------
 ASPECT_DIMS = {
     "1:1": (1024, 1024), "3:4": (768, 1024), "4:3": (1024, 768),
-    "9:16": (576, 1024), "16:9": (1024, 576),
+    "9:16": (576, 1024), "16:9": (1024, 576), "2:3": (768, 1152), "3:2": (1152, 768),
 }
 
 
@@ -229,14 +264,15 @@ def init_live_client():
     return genai.Client(), _types
 
 
-def _maybe_overlay(out_path: Path, asset: dict) -> None:
-    """Stamp the exact on-image text onto a slide when the asset carries one, so the
-    words are correct instead of the model's gibberish. No-op if there is no text."""
+def _post_process(out_path: Path, asset: dict, crop_to: str | None) -> None:
+    """After a slide is written: crop to the desired ratio (if the model couldn't
+    render it directly), then stamp on the exact overlay text."""
+    if crop_to:
+        _center_crop_file(out_path, crop_to)
     text = asset.get("overlay_text")
-    if not text:
-        return
-    from . import config, textcard
-    textcard.overlay_text(out_path, text, font_path=config.brand_font_path())
+    if text:
+        from . import config, textcard
+        textcard.overlay_text(out_path, text, font_path=config.brand_font_path())
 
 
 def generate_image(client, types, asset: dict, defaults: dict, out_dir: Path,
@@ -248,6 +284,8 @@ def generate_image(client, types, asset: dict, defaults: dict, out_dir: Path,
     if defaults.get("brand"):
         prompt = f"{prompt} (brand: {defaults['brand']})"
 
+    # 4:5 (and any unsupported ratio) is rendered at a supported ratio then cropped.
+    gen_ratio, crop_to = resolve_ratio(asset.get("aspect_ratio"))
     target_dir = asset_target_dir(out_dir, asset)
     results = []
     for n in revision_numbers(asset):
@@ -261,19 +299,19 @@ def generate_image(client, types, asset: dict, defaults: dict, out_dir: Path,
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if mode == "mock":
-            write_placeholder_png(out_path, asset.get("aspect_ratio"), f"{asset['id']}_v{n}")
-            _maybe_overlay(out_path, asset)
+            write_placeholder_png(out_path, gen_ratio, f"{asset['id']}_v{n}")
+            _post_process(out_path, asset, crop_to)
             emit(f"  mock   -> {rel}")
             results.append({"file": str(out_path), "model": model, "mock": True,
                             "est_cost_usd": round(IMAGE_PRICE_PER_IMAGE, 4)})
             continue
 
         config_obj = None
-        if asset.get("aspect_ratio"):
+        if gen_ratio:
             # Nano Banana takes aspect ratio via image_config.
             config_obj = types.GenerateContentConfig(
                 response_modalities=["Image"],
-                image_config=types.ImageConfig(aspect_ratio=asset["aspect_ratio"]),
+                image_config=types.ImageConfig(aspect_ratio=gen_ratio),
             )
         # Retry rate-limit 429s and transient 5xx with exponential backoff; only a
         # successful generation bills, so a retried call costs nothing extra.
@@ -304,7 +342,7 @@ def generate_image(client, types, asset: dict, defaults: dict, out_dir: Path,
                         break
                 if not saved:
                     raise RuntimeError(f"no image data returned for asset '{asset['id']}'")
-                _maybe_overlay(out_path, asset)
+                _post_process(out_path, asset, crop_to)
                 break
             except Exception as e:
                 if attempt < retries and is_retryable_error(e):

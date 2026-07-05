@@ -77,10 +77,15 @@ def parse_carousel_prompt(prompt: str) -> list[dict]:
 # canonical field -> accepted header spellings (normalised: lower, single-spaced)
 _HEADER_ALIASES = {
     "row_id": {"row id"},
+    "date": {"date"},
+    "day": {"day"},
+    "time": {"time (et)", "time"},
     "platform": {"platform"},
     "pillar": {"content pillar", "pillar"},
     "format": {"format"},
     "hook": {"hook / headline", "hook/headline", "hook", "headline"},
+    "caption": {"caption (full copy)", "caption"},
+    "hashtags": {"first-comment hashtags (ig)", "first-comment hashtags", "hashtags"},
     "visual_type": {"visual type"},
     "prompt": {"visual direction / prompt(s)", "visual direction / prompt",
                "visual direction / prompts", "visual direction"},
@@ -118,6 +123,12 @@ class RowJob:
     group: str | None = None       # carousel group folder name
     existing_link: str | None = None
     skip_reason: str = ""          # non-empty => don't generate (status/visual/etc.)
+    # display fields (for the review preview; not used by generation)
+    date: str = ""
+    day: str = ""
+    caption: str = ""
+    hashtags: str = ""
+    notes: str = ""
 
     @property
     def in_scope(self) -> bool:
@@ -156,6 +167,15 @@ class Calendar:
         c = self.cols.get(field_name)
         return self.ws.cell(row, c).value if c else None
 
+    @staticmethod
+    def _fmt_date(v) -> str:
+        """Date cell -> 'YYYY-MM-DD' (openpyxl may hand back a datetime or a string)."""
+        if v is None:
+            return ""
+        if hasattr(v, "strftime"):
+            return v.strftime("%Y-%m-%d")
+        return str(v).strip()
+
     # --- read -----------------------------------------------------------------
     def read_jobs(self) -> list[RowJob]:
         jobs: list[RowJob] = []
@@ -181,7 +201,12 @@ class Calendar:
         job = RowJob(row_index=r, row_id=row_id, platform=platform, pillar=pillar,
                      hook=hook, status=status, visual_type=visual_type, fmt=fmt,
                      prompt=prompt, model=model_cell, plan=plan,
-                     existing_link=self._get(r, "asset_link"))
+                     existing_link=self._get(r, "asset_link"),
+                     date=self._fmt_date(self._get(r, "date")),
+                     day=str(self._get(r, "day") or "").strip(),
+                     caption=str(self._get(r, "caption") or "").strip(),
+                     hashtags=str(self._get(r, "hashtags") or "").strip(),
+                     notes=str(self._get(r, "notes") or "").strip())
 
         # Only Draft rows are ever generated (per the workflow spec).
         if status.lower() != "draft":

@@ -14,6 +14,10 @@ credentials.json
 generated/
 fal.ai/
 
+# Generated review pages (rebuilt on demand from Drive)
+*_preview.html
+*.mock.xlsx
+
 # Python
 __pycache__/
 *.py[cod]
