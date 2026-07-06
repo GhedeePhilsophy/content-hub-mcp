@@ -194,17 +194,20 @@ class _DriveSource:
         fid = self.drive.find_folder_path(base, subpath) if base else None
         return self.drive.list_children(fid) if fid else []
 
-    def fetch_calendar(self, version: int | None) -> tuple[str, bytes, str | None]:
+    def fetch_calendar(self, version: int | None) -> tuple[str, bytes, str | None, str | None]:
         """Get the calendar as .xlsx bytes. With no version, prefer the LIVING Google
         Sheet (exported to .xlsx) so the preview reflects current edits; otherwise fall
-        back to a versioned .xlsx snapshot. Returns (label, bytes, drive_view_link)."""
+        back to a versioned .xlsx snapshot. Returns (label, bytes, drive_view_link,
+        spreadsheet_id) — spreadsheet_id is set only for the editable LIVING sheet (a
+        Google Sheet's Drive id is its spreadsheetId); it is None for a frozen snapshot."""
         if not self.docs:
             raise FileNotFoundError(f"{rules.SUBFOLDER_DOCS} not found on Drive.")
         if version is None:
             live_name = f"{rules.CALENDAR_PREFIX}_{self.calendar_id}"
             live = self.drive.find_by_name(live_name, self.docs, mime=GSHEET_MIME)
             if live:
-                return "live", self.drive.export_as_xlsx(live["id"]), live.get("webViewLink")
+                return ("live", self.drive.export_as_xlsx(live["id"]),
+                        live.get("webViewLink"), live["id"])
         best = None  # (version, file)
         for f in self.drive.list_children(self.docs):
             parsed = rules.parse_calendar_filename(f["name"])
@@ -218,7 +221,8 @@ class _DriveSource:
             raise FileNotFoundError(
                 f"could not find {want} for {self.calendar_id} in "
                 f"{rules.SUBFOLDER_DOCS} on Drive.")
-        return f"v{best[0]}", self.drive.download_bytes(best[1]["id"]), best[1].get("webViewLink")
+        return (f"v{best[0]}", self.drive.download_bytes(best[1]["id"]),
+                best[1].get("webViewLink"), None)
 
     def assets_for(self, row_id: str) -> dict:
         pre = f"{row_id}_"
@@ -352,7 +356,7 @@ def _avatar(cls: str = "") -> str:
 
 def _status_kind(status: str) -> str:
     """Spreadsheet Status -> color kind: Draft=yellow, Approved=green,
-    Awaiting Asset=gray, else red."""
+    Awaiting Asset=gray, Wiah Review=purple, else red."""
     s = (status or "").strip().lower()
     if s == "draft":
         return "draft"
@@ -360,6 +364,8 @@ def _status_kind(status: str) -> str:
         return "ok"
     if s == "awaiting asset":
         return "await"
+    if s == "wiah review":
+        return "review"
     return "other"
 
 
@@ -376,10 +382,29 @@ def _is_carousel(job) -> bool:
     return (job.fmt or "").strip().lower() == "carousel"
 
 
-def _status_pill(status: str) -> str:
-    # color comes from the parent card's st-{kind} custom properties
-    label = _esc(status.strip()) if status and status.strip() else "—"
-    return f'<span class="pill">{label}</span>'
+# The statuses a reviewer can set from the preview's dropdown. Kept in sync with
+# _status_kind's colour buckets; any other free-text status stays valid (it's shown
+# as an extra option so editing never silently drops an unrecognised value).
+STATUS_OPTIONS = ["Draft", "Awaiting Asset", "Wiah Review", "Approved"]
+
+
+def _status_pill(status: str, row_id: str = "") -> str:
+    """A native <select> styled as the status pill. Its colour comes from the parent
+    card's st-{kind} custom properties. It renders disabled (looks like a static pill)
+    unless the page is served via the Apps Script web app, where the script enables it
+    and each change writes back to the living Sheet."""
+    cur = status.strip() if status and status.strip() else ""
+    opts = list(STATUS_OPTIONS)
+    if cur and cur not in opts:
+        opts.insert(0, cur)  # preserve an unrecognised status as a selectable option
+    options = ""
+    if not cur:
+        options += '<option value="" selected>—</option>'
+    options += "".join(
+        f'<option{" selected" if o == cur else ""}>{_esc(o)}</option>' for o in opts)
+    return (f'<select class="pill pill-edit" data-rowid="{_esc(row_id)}" '
+            f'data-status="{_esc(cur)}" disabled '
+            f'aria-label="Post status">{options}</select>')
 
 
 def _card(job, assets: dict, cache=None, sheet_link: str | None = None) -> str:
@@ -451,7 +476,7 @@ def _card(job, assets: dict, cache=None, sheet_link: str | None = None) -> str:
         f'<span class="rid">{_esc(job.row_id)}</span>'
         f'<span class="cdate">{_esc(_fmt_day(job.date, job.day))}</span>'
         + (f'<span class="cfmt">{_esc(job.fmt)}</span>' if job.fmt else "")
-        + _status_pill(job.status) + '</div>'
+        + _status_pill(job.status, job.row_id) + '</div>'
         + (f'<div class="chook">{_esc(job.hook)}</div>' if job.hook else "")
         + actions_html + '</div>')
     return (f'<article class="card {key} st-{kind}" data-platform="{key}" '
@@ -485,6 +510,7 @@ def _grid_cell(job, assets: dict, cache=None) -> str:
         inner = '<div class="gph gph-none"></div>'
     kind = _status_kind(job.status)
     return (f'<div class="gcell st-{kind}" data-status="{kind}" '
+            f'data-rowid="{_esc(job.row_id)}" '
             f'title="{_esc(job.row_id)} · {_esc(job.status)} · {_esc(job.hook)}">'
             f'{inner}{corner}</div>')
 
@@ -516,7 +542,7 @@ def build_preview(calendar_id: str, version: int | None = None, *,
     client = DriveClient(config.credentials_path(), config.token_path(),
                          allow_interactive=False)
     drive_source = _DriveSource(client, calendar_id)
-    label, xlsx_bytes, sheet_link = drive_source.fetch_calendar(version)
+    label, xlsx_bytes, sheet_link, sheet_id = drive_source.fetch_calendar(version)
     emit(f"calendar: {calendar_id} ({label}) from Drive")
 
     def resolve(row_id: str) -> dict:
@@ -530,7 +556,7 @@ def build_preview(calendar_id: str, version: int | None = None, *,
     weeks: dict[str, list] = {}
     labels: dict[str, str] = {}
     counts = {"instagram": 0, "facebook": 0, "tiktok": 0}
-    scount = {"draft": 0, "ok": 0, "await": 0, "other": 0}
+    scount = {"draft": 0, "ok": 0, "await": 0, "review": 0, "other": 0}
     n_asset = 0
     for j in jobs:
         key, label = _week_of(j.date)
@@ -560,7 +586,8 @@ def build_preview(calendar_id: str, version: int | None = None, *,
                         f'<div class="grid">{"".join(cards)}</div></section>')
 
     emit(f"preview: {len(jobs)} posts, {scount['ok']} approved / {scount['draft']} draft "
-         f"/ {scount['await']} awaiting asset / {scount['other']} other")
+         f"/ {scount['await']} awaiting asset / {scount['review']} wiah review "
+         f"/ {scount['other']} other")
     rcount = sum(1 for j in jobs if _is_reel(j))
     ccount = sum(1 for j in jobs if _is_carousel(j))
     chips = ('<div class="chips"><button class="chip active" data-f="all">All '
@@ -582,7 +609,9 @@ def build_preview(calendar_id: str, version: int | None = None, *,
         f'<button class="chip st-other" data-s="other"><i class="sdot"></i>Other '
         f'<b>{scount["other"]}</b></button>'
         f'<button class="chip st-await" data-s="await"><i class="sdot"></i>Awaiting Asset '
-        f'<b>{scount["await"]}</b></button><span class="chip-sep"></span>'
+        f'<b>{scount["await"]}</b></button>'
+        f'<button class="chip st-review" data-s="review"><i class="sdot"></i>Wiah Review '
+        f'<b>{scount["review"]}</b></button><span class="chip-sep"></span>'
         f'<button class="chip delivered" data-s="delivered">✓ Asset Delivered '
         f'<b>{len(jobs) - scount["await"]}</b></button>'
         f'<button class="chip needs" data-s="needs">⚠ Needs review '
@@ -603,6 +632,7 @@ def build_preview(calendar_id: str, version: int | None = None, *,
         .replace("{{STATUS_CHIPS}}", status_chips) \
         .replace("{{SECTIONS}}", "".join(sections)).replace("{{GRID}}", grid_html) \
         .replace("{{AVATAR_CSS}}", avatar_css) \
+        .replace("{{SHEET_ID}}", _esc(sheet_id or "")) \
         .replace("{{SUBTITLE}}", f"{len(jobs)} posts · draft review")
 
     result = {"calendar_id": calendar_id, "source": label, "posts": len(jobs),
@@ -663,9 +693,9 @@ header.top .sub{color:var(--muted);font-size:13px;text-transform:uppercase;lette
 /* status filter chips (second row) */
 .chips.status{margin:-14px 0 26px}
 .chip .sdot{width:10px;height:10px;border-radius:3px;background:var(--sc-bright);display:inline-block}
-.chip.st-draft.active,.chip.st-ok.active,.chip.st-other.active,.chip.st-await.active{
+.chip.st-draft.active,.chip.st-ok.active,.chip.st-other.active,.chip.st-await.active,.chip.st-review.active{
   background:var(--sc-bright);border-color:var(--sc-bright);color:var(--sc-ink)}
-.chip.st-draft.active b,.chip.st-ok.active b,.chip.st-other.active b,.chip.st-await.active b{color:var(--sc-ink);opacity:.75}
+.chip.st-draft.active b,.chip.st-ok.active b,.chip.st-other.active b,.chip.st-await.active b,.chip.st-review.active b{color:var(--sc-ink);opacity:.75}
 .chip.delivered{border-color:#2A9D8F;color:#1f7a70;font-weight:700}
 .chip.delivered.active{background:#2A9D8F;border-color:#2A9D8F;color:#062e2a}
 .chip.delivered.active b{color:#062e2a;opacity:.75}
@@ -690,10 +720,12 @@ header.top .sub{color:var(--muted);font-size:13px;text-transform:uppercase;lette
 .wk-bar{width:110px;height:6px;border-radius:99px;background:var(--line);overflow:hidden}
 .wk-bar i{display:block;height:100%;background:#1FC24C;border-radius:99px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:22px;align-items:start}
-/* per-status color tokens (Draft=yellow, Approved=green, Awaiting Asset=gray, else red) */
+/* per-status color tokens (Draft=yellow, Approved=green, Awaiting Asset=gray,
+   Wiah Review=purple, else red) */
 .st-draft{--sc:#E3AE17;--sc-bright:#F5C518;--sc-tint:rgba(245,197,24,.18);--sc-ink:#4a3800}
 .st-ok{--sc:#1FA64A;--sc-bright:#1FC24C;--sc-tint:rgba(31,194,76,.15);--sc-ink:#fff}
 .st-await{--sc:#7B828C;--sc-bright:#9AA0A9;--sc-tint:rgba(123,130,140,.16);--sc-ink:#fff}
+.st-review{--sc:#7A4FD0;--sc-bright:#9163E4;--sc-tint:rgba(145,99,228,.16);--sc-ink:#fff}
 .st-other{--sc:#DE2F22;--sc-bright:#F1362C;--sc-tint:rgba(241,54,44,.14);--sc-ink:#fff}
 /* each post is a box framed in its status color, with a prominent header on top */
 .card{display:flex;flex-direction:column;border:3px solid var(--sc);border-radius:14px;
@@ -710,6 +742,26 @@ header.top .sub{color:var(--muted);font-size:13px;text-transform:uppercase;lette
 .pill{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;
   padding:4px 11px;border-radius:7px;background:var(--sc-bright);color:var(--sc-ink);
   box-shadow:0 1px 3px rgba(0,0,0,.22)}
+/* status pill rendered as a <select>; disabled it reads as a static pill, enabled
+   (only when served via the Apps Script web app) it edits the live sheet. */
+.pill-edit{appearance:none;-webkit-appearance:none;border:none;font:inherit;font-weight:800;
+  text-transform:uppercase;letter-spacing:.06em;cursor:default;max-width:160px}
+.pill-edit:disabled{opacity:1;color:var(--sc-ink)}
+.pill-edit:not(:disabled){cursor:pointer;padding-right:24px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23222' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 8px center;background-size:9px}
+.pill-edit:not(:disabled):hover{box-shadow:0 1px 3px rgba(0,0,0,.22),0 0 0 2px rgba(0,0,0,.18)}
+.pill-edit.saving{opacity:.55}
+.pill-edit.saved{box-shadow:0 1px 3px rgba(0,0,0,.22),0 0 0 2px #1FC24C}
+.pill-edit option{color:#17281E;background:#fff;font-weight:600;
+  text-transform:none;letter-spacing:normal}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);
+  background:#3a1a17;color:#ffeede;border:1px solid #B0524A;padding:10px 16px;border-radius:10px;
+  font:600 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  box-shadow:0 4px 16px rgba(0,0,0,.3);z-index:80;opacity:0;pointer-events:none;
+  transition:opacity .2s,transform .2s;max-width:80vw}
+.toast.ok{background:#173a24;border-color:#1FA64A;color:#e6ffe9}
+.toast.show{opacity:1;transform:translateX(-50%)}
 .frame{overflow:hidden}
 /* avatar monogram */
 .avatar{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;
@@ -848,8 +900,9 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
   {{STATUS_CHIPS}}
   <div id="feed">{{SECTIONS}}</div>
   {{GRID}}
-  <footer>Draft review · nothing here is published. Approve in the calendar, not this page.</footer>
+  <footer id="foot">Draft review · nothing here is published. Approve in the calendar, not this page.</footer>
 </div>
+<div class="toast" id="toast"></div>
 <div class="wknow" id="totop-wk"></div>
 <div class="totop" id="totop">
   <button class="totop-btn" id="totop-btn" aria-label="Back to top" title="Back to top">
@@ -878,7 +931,7 @@ document.querySelectorAll('.media.carousel').forEach(function(c){
 var flt={f:'all', s:'all'};
 function statusMatch(s){
   if(flt.s==='all') return true;
-  if(flt.s==='needs') return s!=='ok';
+  if(flt.s==='needs') return s==='draft'||s==='other';
   if(flt.s==='delivered') return s!=='await';
   return s===flt.s;
 }
@@ -935,6 +988,133 @@ document.querySelectorAll('.act[data-copy]').forEach(function(b){
     });
   });
 });
+// ---- interactive status editing (only when served via the Apps Script web app) ----
+// The page runs inside HtmlService's sandbox, so google.script.run can call the
+// server-side setPostStatus(sheetId,rowId,status) directly — no fetch/CORS/token.
+var SHEET_ID = "{{SHEET_ID}}";
+function statusKind(s){
+  s=(s||'').trim().toLowerCase();
+  if(s==='draft') return 'draft';
+  if(s==='approved') return 'ok';
+  if(s==='awaiting asset') return 'await';
+  if(s==='wiah review') return 'review';
+  return 'other';
+}
+function applyKind(el, kind){
+  el.classList.remove('st-draft','st-ok','st-await','st-review','st-other');
+  el.classList.add('st-'+kind); el.dataset.status=kind;
+}
+function paintRow(rowId, statusStr){
+  var kind=statusKind(statusStr);
+  document.querySelectorAll('.pill-edit').forEach(function(sel){
+    if(sel.dataset.rowid===rowId){ var card=sel.closest('.card'); if(card) applyKind(card,kind); }
+  });
+  document.querySelectorAll('.gcell').forEach(function(g){
+    if(g.dataset.rowid===rowId) applyKind(g,kind);
+  });
+}
+function setChipCount(sel, n){ var b=document.querySelector('.chip'+sel+' b'); if(b) b.textContent=n; }
+function recount(){
+  var k={draft:0,ok:0,await:0,review:0,other:0}, total=0;
+  document.querySelectorAll('#feed .card').forEach(function(c){
+    total++; if(k[c.dataset.status]!=null) k[c.dataset.status]++; });
+  setChipCount('[data-s="all"]', total);
+  setChipCount('[data-s="draft"]', k.draft); setChipCount('[data-s="ok"]', k.ok);
+  setChipCount('[data-s="await"]', k.await); setChipCount('[data-s="review"]', k.review);
+  setChipCount('[data-s="other"]', k.other);
+  setChipCount('[data-s="delivered"]', total-k.await);
+  setChipCount('[data-s="needs"]', k.draft+k.other);
+  document.querySelectorAll('#feed .week').forEach(function(w){
+    var cards=w.querySelectorAll('.card'), ok=0;
+    cards.forEach(function(c){ if(c.dataset.status==='ok') ok++; });
+    var n=cards.length, pct=n?Math.round(100*ok/n):0;
+    var cnt=w.querySelector('.wk-count'); if(cnt) cnt.textContent=ok+'/'+n+' approved';
+    var bar=w.querySelector('.wk-bar i'); if(bar) bar.style.width=pct+'%';
+  });
+}
+var toastT;
+function toast(msg, ok){
+  var t=document.getElementById('toast'); if(!t) return;
+  t.textContent=msg; t.classList.toggle('ok', !!ok); t.classList.add('show');
+  clearTimeout(toastT); toastT=setTimeout(function(){t.classList.remove('show');}, ok?1800:4500);
+}
+function onStatusChange(sel){
+  var rowId=sel.dataset.rowid, prev=sel.dataset.status||'', next=sel.value;
+  if(next===prev) return;
+  sel.disabled=true; sel.classList.add('saving');
+  paintRow(rowId, next); recount();  // optimistic
+  function revert(msg){
+    sel.value=prev; paintRow(rowId, prev); recount();
+    sel.disabled=false; sel.classList.remove('saving');
+    toast(msg, false);
+  }
+  try {
+    google.script.run
+      .withSuccessHandler(function(res){
+        if(window.console) console.log('setPostStatus result', res);
+        if(!(res && res.ok)){
+          // server returned but didn't confirm a write (e.g. an older endpoint)
+          revert('Save not confirmed for '+rowId+' — the sheet may be unchanged.');
+          return;
+        }
+        sel.dataset.status=next; sel.disabled=false;
+        sel.classList.remove('saving'); sel.classList.add('saved');
+        setTimeout(function(){sel.classList.remove('saved');},1200);
+        toast('Saved '+rowId+' → '+res.newValue+' · '+res.sheetName+' row '+res.row, true);
+        applyFilter();
+      })
+      .withFailureHandler(function(err){
+        revert('Could not save '+rowId+': '+((err&&err.message)||err));
+      })
+      .setPostStatus(SHEET_ID, rowId, next);
+  } catch(e){
+    // e.g. the setPostStatus endpoint isn't deployed — never leave the pill stuck.
+    revert('Status editing is unavailable: '+((e&&e.message)||e));
+  }
+}
+function applyStatusValue(rowId, statusStr){
+  // Reflect a status string coming from the sheet onto the pill + card + grid tile.
+  var kind=statusKind(statusStr);
+  document.querySelectorAll('.pill-edit').forEach(function(sel){
+    if(sel.dataset.rowid!==rowId) return;
+    var has=false;
+    for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===statusStr){ has=true; break; } }
+    if(!has && statusStr){ var o=document.createElement('option'); o.textContent=statusStr; sel.appendChild(o); }
+    sel.value=statusStr; sel.dataset.status=statusStr;
+    var card=sel.closest('.card'); if(card) applyKind(card, kind);
+  });
+  document.querySelectorAll('.gcell').forEach(function(g){
+    if(g.dataset.rowid===rowId) applyKind(g, kind);
+  });
+}
+function hydrateStatuses(){
+  // The served HTML is a static snapshot; pull the sheet's CURRENT statuses on load so a
+  // refresh (or a status edited straight in the sheet) is reflected without a rebuild.
+  if(typeof google.script.run.getPostStatuses !== 'function') return;
+  google.script.run
+    .withSuccessHandler(function(map){
+      if(!map) return;
+      Object.keys(map).forEach(function(rowId){ applyStatusValue(rowId, map[rowId]); });
+      recount(); applyFilter();
+    })
+    .withFailureHandler(function(){ /* keep the static snapshot on failure */ })
+    .getPostStatuses(SHEET_ID);
+}
+(function initLive(){
+  if(!(window.google && google.script && google.script.run && SHEET_ID)) return;
+  // Enable editing only if the setPostStatus endpoint is deployed — otherwise stay
+  // read-only rather than offering a dropdown whose changes can't be saved.
+  if(typeof google.script.run.setPostStatus === 'function'){
+    document.body.classList.add('editable');
+    document.querySelectorAll('.pill-edit').forEach(function(sel){
+      sel.disabled=false;
+      sel.addEventListener('change',function(){ onStatusChange(sel); });
+    });
+    var f=document.getElementById('foot');
+    if(f) f.textContent='Live editing on · status changes save straight to the calendar sheet.';
+  }
+  hydrateStatuses();  // reflect the sheet's current statuses on every load
+})();
 // back-to-top button + live "current week/month" indicator
 (function(){
   var fab=document.getElementById('totop'); if(!fab) return;
