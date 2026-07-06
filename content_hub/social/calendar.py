@@ -87,8 +87,9 @@ _HEADER_ALIASES = {
     "caption": {"caption (full copy)", "caption"},
     "hashtags": {"first-comment hashtags (ig)", "first-comment hashtags", "hashtags"},
     "visual_type": {"visual type"},
-    "prompt": {"visual direction / prompt(s)", "visual direction / prompt",
-               "visual direction / prompts", "visual direction"},
+    "visual_direction": {"visual direction"},
+    # The Prompt column is what actually drives image/video generation.
+    "prompt": {"prompt"},
     "ai_model": {"ai model"},
     "est_cost": {"est. cost (usd)", "est cost (usd)", "est. cost", "est cost"},
     "asset_link": {"generated asset link (drive)", "generated asset link"},
@@ -108,11 +109,11 @@ LINK_FONT_COLOR = "0563C1"  # Excel's default hyperlink blue
 SHELL_HEADERS = [
     "Row ID", "Date", "Day", "Time (ET)", "Platform", "Content Pillar", "Format",
     "Slides", "Hook / Headline", "Caption (full copy)", "First-comment Hashtags (IG)",
-    "Visual Type", "Visual Direction / Prompt(s)", "AI Model", "Est. Cost (USD)",
+    "Visual Type", "Visual Direction", "Prompt", "AI Model", "Est. Cost (USD)",
     "Generated Asset Link (Drive)", "Link (blog slug if amplifying)", "Attribution",
     "Status", "Your Notes", "Revision (Claude)",
 ]
-SHELL_COL_WIDTHS = [14, 6, 10, 26, 22, 14, 28, 10, 30, 18, 50, 26, 24, 16, 30, 13,
+SHELL_COL_WIDTHS = [14, 6, 10, 26, 22, 14, 28, 10, 30, 18, 50, 26, 26, 40, 16, 30, 13,
                     8.71, 13, 13, 13, 13]
 HEADER_FILL = "FF1B3A2D"          # deep forest green (opaque ARGB)
 HEADER_FONT_COLOR = "FFF7F2E8"    # ivory
@@ -182,6 +183,7 @@ class RowJob:
     caption: str = ""
     hashtags: str = ""
     notes: str = ""
+    visual_direction: str = ""  # human art-direction notes; the Prompt column generates
 
     @property
     def in_scope(self) -> bool:
@@ -266,7 +268,8 @@ class Calendar:
                      day=str(self._get(r, "day") or "").strip(),
                      caption=str(self._get(r, "caption") or "").strip(),
                      hashtags=str(self._get(r, "hashtags") or "").strip(),
-                     notes=str(self._get(r, "notes") or "").strip())
+                     notes=str(self._get(r, "notes") or "").strip(),
+                     visual_direction=str(self._get(r, "visual_direction") or "").strip())
 
         # Only Draft rows are ever generated (per the workflow spec).
         if status.lower() != "draft":
@@ -276,7 +279,7 @@ class Calendar:
             job.skip_reason = plan.reason
             return job
         if not prompt:
-            job.skip_reason = "no prompt in Visual Direction column"
+            job.skip_reason = "no prompt in Prompt column"
             return job
 
         job.assets = self._assets_for(job)
