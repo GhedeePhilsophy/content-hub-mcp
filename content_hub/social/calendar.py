@@ -93,6 +93,10 @@ _HEADER_ALIASES = {
     "ai_model": {"ai model"},
     "est_cost": {"est. cost (usd)", "est cost (usd)", "est. cost", "est cost"},
     "asset_link": {"generated asset link (drive)", "generated asset link"},
+    # A human-picked asset to use INSTEAD of generating: when set, generate copies it
+    # into the target location rather than calling the image model.
+    "selected_asset": {"selected asset link (drive)", "selected asset link",
+                       "selected asset"},
     "status": {"status"},
     "notes": {"your notes", "notes"},
     "slides": {"slides", "slide count", "# slides"},
@@ -105,27 +109,61 @@ LINK_FONT_COLOR = "0563C1"  # Excel's default hyperlink blue
 # --- new-calendar shell -----------------------------------------------------
 # The full column set the team works in (matches the living calendar's layout).
 # The reader locates columns by header name, so this ordering is the human-friendly
-# default Cowork starts from, not a hard contract.
+# default Cowork starts from, not a hard contract. Status leads (and is frozen with
+# Row ID) so a reviewer always sees each post's id + status while scrolling.
 SHELL_HEADERS = [
-    "Row ID", "Date", "Day", "Time (ET)", "Platform", "Content Pillar", "Format",
-    "Slides", "Hook / Headline", "Caption (full copy)", "First-comment Hashtags (IG)",
-    "Visual Type", "Visual Direction", "Prompt", "AI Model", "Est. Cost (USD)",
-    "Generated Asset Link (Drive)", "Link (blog slug if amplifying)", "Attribution",
-    "Status", "Your Notes", "Revision (Claude)",
+    "Status", "Row ID", "Date", "Day", "Time (ET)", "Platform", "Content Pillar",
+    "Format", "Slides", "Hook / Headline", "Caption (full copy)",
+    "First-comment Hashtags (IG)", "Visual Type", "Visual Direction", "Prompt",
+    "AI Model", "Est. Cost (USD)", "Generated Asset Link (Drive)", "Selected Asset Link",
+    "Link (blog slug if amplifying)", "Attribution", "Your Notes", "Revision (Claude)",
 ]
-SHELL_COL_WIDTHS = [14, 6, 10, 26, 22, 14, 28, 10, 30, 18, 50, 26, 26, 40, 16, 30, 13,
-                    8.71, 13, 13, 13, 13]
+SHELL_COL_WIDTHS = [13, 14, 6, 10, 26, 22, 14, 28, 10, 30, 18, 50, 26, 26, 40, 16, 30,
+                    13, 13, 8.71, 13, 13, 13]
+FROZEN_COLUMNS = 2  # Status + Row ID stay put when scrolling horizontally
 HEADER_FILL = "FF1B3A2D"          # deep forest green (opaque ARGB)
 HEADER_FONT_COLOR = "FFF7F2E8"    # ivory
 HEADER_BORDER_COLOR = "FF7B9E87"  # sage
 DEFAULT_TAB_TITLE = "Calendar"  # kept generic — the id may be a range or single day
 
+# Status -> cell fill (light tints, readable with dark text). Kept in sync with the
+# preview's status palette (content_hub/social/preview.py) and the Apps Script
+# conditional-formatting installer (docs/appscript_status_endpoint.gs). Blank = no fill.
+STATUS_FILLS = {
+    "Draft": "FDECB0",           # yellow
+    "Approved": "BCE8C8",        # green
+    "Awaiting Asset": "DDE0E4",  # gray
+    "Wiah Review": "E0D2F7",     # purple
+}
+STATUS_OTHER_FILL = "F7C7C2"     # any other non-blank status -> red
+
+
+def add_status_conditional_formatting(ws, headers=SHELL_HEADERS, last_row: int = 1000):
+    """Colour the Status column by value via native conditional formatting, so a status
+    set anywhere — the preview OR a direct edit — is coloured automatically, matching the
+    preview palette. Rules cover the four known statuses plus a catch-all (any other
+    non-blank value -> red)."""
+    from openpyxl.formatting.rule import CellIsRule, FormulaRule
+    from openpyxl.styles import PatternFill
+    from openpyxl.utils import get_column_letter
+    col = get_column_letter(headers.index("Status") + 1)
+    rng = f"{col}2:{col}{last_row}"
+    for status, rgb in STATUS_FILLS.items():
+        ws.conditional_formatting.add(rng, CellIsRule(
+            operator="equal", formula=[f'"{status}"'],
+            fill=PatternFill("solid", fgColor=rgb)))
+    known = ",".join(f'${col}2<>"{s}"' for s in STATUS_FILLS)
+    ws.conditional_formatting.add(rng, FormulaRule(
+        formula=[f'AND(${col}2<>"",{known})'],
+        fill=PatternFill("solid", fgColor=STATUS_OTHER_FILL)))
+
 
 def build_shell_workbook(tab_title: str = DEFAULT_TAB_TITLE):
     """A header-only calendar workbook matching the team's column layout, styled to
-    match the living calendar (deep-green header, ivory bold text, sage borders, a
-    frozen header row). Cowork fills the Draft rows in; the reader locates columns by
-    header name, so the exact ordering here is a convenience, not a contract."""
+    match the living calendar (deep-green header, ivory bold text, sage borders). The
+    header row and the first two columns (Status, Row ID) are frozen, and the Status
+    column is colour-coded by value. Cowork fills the Draft rows in; the reader locates
+    columns by header name, so the exact ordering here is a convenience, not a contract."""
     import openpyxl
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -142,7 +180,9 @@ def build_shell_workbook(tab_title: str = DEFAULT_TAB_TITLE):
         cell.fill, cell.font, cell.border, cell.alignment = fill, font, border, align
         ws.column_dimensions[get_column_letter(i)].width = width
     ws.row_dimensions[1].height = 46.25
-    ws.freeze_panes = "A2"
+    # Freeze the header row and the first FROZEN_COLUMNS columns (cell = first scrollable).
+    ws.freeze_panes = f"{get_column_letter(FROZEN_COLUMNS + 1)}2"
+    add_status_conditional_formatting(ws)
     return wb
 
 
@@ -176,6 +216,7 @@ class RowJob:
     assets: list[dict] = field(default_factory=list)  # core.media asset dicts
     group: str | None = None       # carousel group folder name
     existing_link: str | None = None
+    selected_link: str | None = None  # human-picked asset to copy instead of generating
     skip_reason: str = ""          # non-empty => don't generate (status/visual/etc.)
     # display fields (for the review preview; not used by generation)
     date: str = ""
@@ -229,6 +270,20 @@ class Calendar:
         c = self.cols.get(field_name)
         return self.ws.cell(row, c).value if c else None
 
+    def _cell_link(self, row: int, field_name: str) -> str | None:
+        """A URL from a link-bearing cell: the hyperlink target if the cell is a real
+        hyperlink (display text may be a friendly label), else the plain cell value.
+        Used for the human-entered Selected Asset Link, which may be pasted either way."""
+        c = self.cols.get(field_name)
+        if not c:
+            return None
+        cell = self.ws.cell(row, c)
+        if cell.hyperlink and cell.hyperlink.target:
+            return str(cell.hyperlink.target).strip()
+        v = cell.value
+        s = str(v).strip() if v is not None else ""
+        return s or None
+
     @staticmethod
     def _fmt_date(v) -> str:
         """Date cell -> 'YYYY-MM-DD' (openpyxl may hand back a datetime or a string)."""
@@ -264,6 +319,7 @@ class Calendar:
                      hook=hook, status=status, visual_type=visual_type, fmt=fmt,
                      prompt=prompt, model=model_cell, plan=plan,
                      existing_link=self._get(r, "asset_link"),
+                     selected_link=self._cell_link(r, "selected_asset"),
                      date=self._fmt_date(self._get(r, "date")),
                      day=str(self._get(r, "day") or "").strip(),
                      caption=str(self._get(r, "caption") or "").strip(),
@@ -274,6 +330,15 @@ class Calendar:
         # Only Draft rows are ever generated (per the workflow spec).
         if status.lower() != "draft":
             job.skip_reason = f"status is {status!r}, not Draft"
+            return job
+        # Recorded-Wiah clips are never AI-generated; they're sourced only from the
+        # Selected Asset column (copied into 01_Wiah Videos). Without one there's
+        # nothing to do yet — the film hasn't been uploaded.
+        if plan.recorded:
+            if not job.selected_link:
+                job.skip_reason = plan.reason
+                return job
+            job.assets = self._assets_for(job)
             return job
         if not plan.generate:
             job.skip_reason = plan.reason

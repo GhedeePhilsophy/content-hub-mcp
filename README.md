@@ -49,15 +49,18 @@ reuses `core.media` + `core.drive` for the three shared primitives.
 ## How a calendar row becomes media
 
 Only rows with **Status = Draft** and Visual Type `AI text-to-image` /
-`AI text-to-video` are generated. `Recorded video of Wiah` rows are left alone
-(they need a film shoot). Aspect ratio is **derived per row** (Visual Type first,
-Format second — the `Format` column alone is ambiguous):
+`AI text-to-video` are generated. `Recorded video of Wiah` rows are never
+AI-generated — they're Wiah's own clips, so they only come from a **`Selected Asset
+Link`** (copied into `01_Wiah Videos`); without one the row is left alone until the
+film is uploaded. Aspect ratio is **derived per row** (Visual Type first, Format
+second — the `Format` column alone is ambiguous):
 
 | Visual Type | Format | Kind | Aspect | Files |
 |---|---|---|---|---|
 | AI text-to-video | any | video | 16:9 | 1 (`{RowID}_{Plat}_{Slug}_v1.mp4`) |
 | AI text-to-image | `Carousel` | carousel | 4:5 | N slides (`slide-1..N_v1.png` in a group folder) |
 | AI text-to-image | anything else | image | 1:1 | 1 (`{RowID}_{Plat}_{Slug}_v1.png`) |
+| Recorded video of Wiah | any | video (copied) | 9:16 | 1 in `01_Wiah Videos`, from the Selected Asset only |
 
 Carousels read a **`Slides`** column for the slide count (defaults to 4). The
 Row ID is the stable key: the Drive existence check matches on the `{RowID}_`
@@ -66,6 +69,19 @@ prefix, so editing a hook never orphans an already-generated file.
 **Idempotency:** a row is **skipped** if its asset already exists on Drive.
 **Deleting the Drive file (or a carousel's group folder) is how you request a
 regeneration.**
+
+**Bring-your-own asset:** if a single-image or single-video row's
+**`Selected Asset Link`** column (just after `Generated Asset Link (Drive)`) is
+filled, generate skips the model and instead **copies that asset** into the file
+the model would have produced — an image into the `.png` slot, a video into the
+`.mp4` slot (accepts a Drive share link, a plain `http(s)` URL, or a local path).
+If the source can't be reached the row is marked `Failed` and the run continues.
+(Carousels always generate — a single link can't fill multiple slides.)
+
+For these rows the idempotency check is content-aware: if the copy already on
+Drive matches the Selected Asset (compared by MD5) it's skipped; if you **point the
+Selected Asset Link at a different file, the next generate re-copies** it (no need
+to delete the old Drive file first).
 
 ## Three modes (every tool + CLI command)
 

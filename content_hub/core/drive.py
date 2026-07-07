@@ -19,6 +19,7 @@ create (the narrower drive.file scope can't, which would duplicate folders).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -26,6 +27,21 @@ GSHEET_MIME = "application/vnd.google-apps.spreadsheet"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MIME_BY_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".mp4": "video/mp4", ".mov": "video/quicktime", ".xlsx": XLSX_MIME}
+
+# A Drive id embedded in a share link: a file (/file/d/<id>/…), a folder
+# (/drive/folders/<id>), or the legacy ?id=<id> form.
+_DRIVE_ID_RE = re.compile(r"/(?:d|folders)/([A-Za-z0-9_-]+)|[?&]id=([A-Za-z0-9_-]+)")
+
+
+def file_id_from_link(link: str | None) -> str | None:
+    """Extract a Drive id from a share link — a file (``/file/d/<id>/…``), a folder
+    (``/drive/folders/<id>``), or the legacy ``?id=<id>`` form. Returns None for a
+    non-Drive URL or unparseable value. (A folder link resolves to the folder's id; the
+    caller decides how to handle a folder vs a file.)"""
+    if not link:
+        return None
+    m = _DRIVE_ID_RE.search(link)
+    return (m.group(1) or m.group(2)) if m else None
 
 
 def _q_escape(name: str) -> str:
@@ -133,6 +149,13 @@ class DriveClient:
         f = self.svc.files().get(fileId=file_id, fields="webViewLink",
                                  supportsAllDrives=True).execute()
         return f.get("webViewLink")
+
+    def get_file(self, file_id: str,
+                 fields: str = "id,name,mimeType,md5Checksum,modifiedTime,webViewLink") -> dict:
+        """A file's metadata by id. Used to resolve a Generated Asset Link into the
+        bytes + md5 the preview needs (md5/modifiedTime is the thumbnail cache key)."""
+        return self.svc.files().get(fileId=file_id, fields=fields,
+                                    supportsAllDrives=True).execute()
 
     def make_shareable(self, file_id: str) -> str | None:
         """Grant 'anyone with the link — Viewer' and return the webViewLink. Used so

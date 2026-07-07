@@ -63,6 +63,7 @@ def calendar_folder(calendar_id: str) -> str:
 
 # --- Drive asset structure (Ghedee Social Drive asset-structure doc) --------
 SUBFOLDER_DOCS = "00_Calendar & Docs"
+SUBFOLDER_WIAH_VIDEOS = ["01_Wiah Videos"]  # Wiah's recorded clips (copied, never generated)
 SUBFOLDER_IMAGES = ["02_AI Visuals", "Images"]
 SUBFOLDER_VIDEO = ["02_AI Visuals", "Video"]
 SUBFOLDER_CAROUSELS = ["03_Carousels"]  # <group> is appended
@@ -83,6 +84,8 @@ class VisualPlan:
     aspect_ratio: str  # "1:1" | "3:4" | "16:9" ...
     generate: bool     # False for recorded / unrecognised -> skip, don't error
     reason: str = ""   # why it was skipped (when generate is False)
+    recorded: bool = False  # Wiah's own clip: never AI-generated, only copied from a
+    #                         Selected Asset into 01_Wiah Videos (kind stays "video")
 
 
 def plan_visual(visual_type: str | None, fmt: str | None) -> VisualPlan:
@@ -92,7 +95,9 @@ def plan_visual(visual_type: str | None, fmt: str | None) -> VisualPlan:
       - AI text-to-video  -> 16:9 single video (the 6 hero rows).
       - AI text-to-image + Format 'Carousel' -> 3:4 carousel (multi-slide).
       - AI text-to-image, any other format   -> 1:1 single image.
-      - Recorded video of Wiah / anything else -> skip (not generated here).
+      - Recorded video of Wiah -> a video that is never AI-generated: it's copied
+        from the Selected Asset column into 01_Wiah Videos (kind 'video', recorded).
+      - anything else -> skip (not generated here).
 
     Note: Format alone is unreliable (the video rows also read 'Single image /
     carousel'), so Visual Type is the primary key and Format only distinguishes
@@ -111,8 +116,11 @@ def plan_visual(visual_type: str | None, fmt: str | None) -> VisualPlan:
             return VisualPlan(kind="carousel", aspect_ratio="4:5", generate=True)
         return VisualPlan(kind="image", aspect_ratio="1:1", generate=True)
     if vt == VT_RECORDED:
-        return VisualPlan(kind="skip", aspect_ratio="", generate=False,
-                          reason="recorded clip — needs a film shoot, not generation")
+        # Not AI-generated (generate=False), but a real video asset when a Selected
+        # Asset is provided — the calendar reader gates it on that link.
+        return VisualPlan(kind="video", aspect_ratio="9:16", generate=False,
+                          recorded=True,
+                          reason="recorded clip — awaiting a Selected Asset (no film yet)")
     return VisualPlan(kind="skip", aspect_ratio="", generate=False,
                       reason=f"unrecognised Visual Type {vt!r}")
 
