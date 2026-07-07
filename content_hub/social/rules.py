@@ -73,6 +73,7 @@ SUBFOLDER_CAROUSELS = ["03_Carousels"]  # <group> is appended
 # Visual Type strings as they appear in the sheet's "Visual Type" column.
 VT_IMAGE = "AI text-to-image"
 VT_VIDEO = "AI text-to-video"
+VT_CAROUSEL = "AI text-to-carousel"  # Format 'Carousel' rows use this Visual Type
 VT_RECORDED = "Recorded video of Wiah"  # out of scope for generation
 
 
@@ -92,28 +93,27 @@ def plan_visual(visual_type: str | None, fmt: str | None) -> VisualPlan:
     """Resolve a row's Visual Type + Format into what (and how) to generate.
 
     Rules (Social Calendar Cowork prompt, MEDIA GENERATION section):
-      - AI text-to-video  -> 16:9 single video (the 6 hero rows).
-      - AI text-to-image + Format 'Carousel' -> 3:4 carousel (multi-slide).
-      - AI text-to-image, any other format   -> 1:1 single image.
+      - AI text-to-carousel (Format 'Carousel') -> 4:5 carousel (multi-slide).
+      - AI text-to-video -> single video; Format 'Reel' is vertical 9:16, else 16:9.
+      - AI text-to-image  -> 1:1 single image.
       - Recorded video of Wiah -> a video that is never AI-generated: it's copied
-        from the Selected Asset column into 01_Wiah Videos (kind 'video', recorded).
+        from the Created Asset column into 01_Wiah Videos (kind 'video', recorded).
       - anything else -> skip (not generated here).
 
-    Note: Format alone is unreliable (the video rows also read 'Single image /
-    carousel'), so Visual Type is the primary key and Format only distinguishes
-    the carousel case for image rows.
+    Visual Type is the primary key. The legacy 'AI text-to-image' + Format 'Carousel'
+    combination is still accepted as a carousel for backward compatibility.
     """
     vt = (visual_type or "").strip()
     f = (fmt or "").strip().lower()
+    if vt == VT_CAROUSEL or (vt == VT_IMAGE and f == "carousel"):
+        # 4:5 is Instagram's tallest feed/carousel ratio. gpt-image-2 renders it
+        # natively (1024x1280), so no crop is needed.
+        return VisualPlan(kind="carousel", aspect_ratio="4:5", generate=True)
     if vt == VT_VIDEO:
-        return VisualPlan(kind="video", aspect_ratio="16:9", generate=True)
+        # Reels are vertical short-form (9:16); a Post video is a 16:9 feed clip.
+        return VisualPlan(kind="video", aspect_ratio="9:16" if f == "reel" else "16:9",
+                          generate=True)
     if vt == VT_IMAGE:
-        # A true multi-slide carousel is Format == 'Carousel' exactly; the mixed
-        # 'Single image / carousel' string is treated as a single feed image.
-        if f == "carousel":
-            # 4:5 is Instagram's tallest feed/carousel ratio. gpt-image-2 renders it
-            # natively (1024x1280), so no crop is needed.
-            return VisualPlan(kind="carousel", aspect_ratio="4:5", generate=True)
         return VisualPlan(kind="image", aspect_ratio="1:1", generate=True)
     if vt == VT_RECORDED:
         # Not AI-generated (generate=False), but a real video asset when a Selected

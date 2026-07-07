@@ -17,9 +17,10 @@ from pathlib import Path
 from . import rules
 from ..core import config
 
-# Carousel prompt parsing: split "Slide N — <desc>. On-image text: "<text>"" segments
-# and the trailing global Style/Palette clause that applies to every slide.
-_SLIDE_MARK = re.compile(r"Slide\s+\d+\s*[—–\-]\s*", re.IGNORECASE)
+# Carousel prompt parsing: one prompt per slide, each marked "Slide N:" (a dash — – -
+# is also accepted). Optional per-slide 'On-image text: "…"' and a trailing global
+# Style/Palette clause that applies to every slide.
+_SLIDE_MARK = re.compile(r"Slide\s+\d+\s*[—–:\-]\s*", re.IGNORECASE)
 _STYLE_TAIL = re.compile(r"\b(?:Style|Palette)\s*:", re.IGNORECASE)
 _ONIMG = re.compile(r"On-image text\s*:", re.IGNORECASE)
 _QUOTES = "“”\"'‘’"
@@ -79,12 +80,12 @@ _HEADER_ALIASES = {
     "row_id": {"row id"},
     "date": {"date"},
     "day": {"day"},
-    "time": {"time (et)", "time"},
+    "time": {"time (pt)", "time (et)", "time"},
     "platform": {"platform"},
     "pillar": {"content pillar", "pillar"},
     "format": {"format"},
-    "hook": {"hook / headline", "hook/headline", "hook", "headline"},
-    "caption": {"caption (full copy)", "caption"},
+    "hook": {"headline", "hook / headline", "hook/headline", "hook"},
+    "caption": {"caption", "caption (full copy)"},
     "hashtags": {"first-comment hashtags (ig)", "first-comment hashtags", "hashtags"},
     "visual_type": {"visual type"},
     "visual_direction": {"visual direction"},
@@ -92,11 +93,12 @@ _HEADER_ALIASES = {
     "prompt": {"prompt"},
     "ai_model": {"ai model"},
     "est_cost": {"est. cost (usd)", "est cost (usd)", "est. cost", "est cost"},
-    "asset_link": {"generated asset link (drive)", "generated asset link"},
+    "asset_link": {"generated asset link", "generated asset link (drive)"},
     # A human-picked asset to use INSTEAD of generating: when set, generate copies it
-    # into the target location rather than calling the image model.
-    "selected_asset": {"selected asset link (drive)", "selected asset link",
-                       "selected asset"},
+    # into the target location rather than calling the image model. (Header: "Created
+    # Asset Link"; internal field name kept as selected_asset to limit churn.)
+    "selected_asset": {"created asset link", "selected asset link (drive)",
+                       "selected asset link", "selected asset"},
     "status": {"status"},
     "notes": {"your notes", "notes"},
     "slides": {"slides", "slide count", "# slides"},
@@ -112,15 +114,22 @@ LINK_FONT_COLOR = "0563C1"  # Excel's default hyperlink blue
 # default Cowork starts from, not a hard contract. Status leads (and is frozen with
 # Row ID) so a reviewer always sees each post's id + status while scrolling.
 SHELL_HEADERS = [
-    "Status", "Row ID", "Date", "Day", "Time (ET)", "Platform", "Content Pillar",
-    "Format", "Slides", "Hook / Headline", "Caption (full copy)",
+    "Status", "Row ID", "Date", "Day", "Time (PT)", "Content Pillar", "External Link",
+    "Platform", "Format", "Slides", "Headline", "Caption",
     "First-comment Hashtags (IG)", "Visual Type", "Visual Direction", "Prompt",
-    "AI Model", "Est. Cost (USD)", "Generated Asset Link (Drive)", "Selected Asset Link",
-    "Link (blog slug if amplifying)", "Attribution", "Your Notes", "Revision (Claude)",
+    "AI Model", "Est. Cost (USD)", "Generated Asset Link", "Created Asset Link",
+    "Your Notes", "Revision (Claude)",
 ]
-SHELL_COL_WIDTHS = [13, 14, 6, 10, 26, 22, 14, 28, 10, 30, 18, 50, 26, 26, 40, 16, 30,
-                    13, 13, 8.71, 13, 13, 13]
+SHELL_COL_WIDTHS = [13, 14, 6, 10, 26, 14, 16, 22, 28, 10, 30, 18, 50, 26, 26, 40, 16,
+                    30, 13, 13, 13, 13]
 FROZEN_COLUMNS = 2  # Status + Row ID stay put when scrolling horizontally
+
+# Constrained columns -> their allowed values (rendered as dropdowns in the shell so a
+# new calendar enforces them; Platform + Format together describe the entry, e.g.
+# "Instagram Reel"). Visual Type is derived from Format (Carousel -> AI text-to-carousel).
+PLATFORM_VALUES = ["Instagram", "Facebook", "Tiktok"]
+FORMAT_VALUES = ["Post", "Reel", "Carousel"]
+STATUS_VALUES = ["Draft", "Awaiting Asset", "Wiah Review", "Approved"]
 HEADER_FILL = "FF1B3A2D"          # deep forest green (opaque ARGB)
 HEADER_FONT_COLOR = "FFF7F2E8"    # ivory
 HEADER_BORDER_COLOR = "FF7B9E87"  # sage
@@ -158,6 +167,28 @@ def add_status_conditional_formatting(ws, headers=SHELL_HEADERS, last_row: int =
         fill=PatternFill("solid", fgColor=STATUS_OTHER_FILL)))
 
 
+def add_dropdowns(ws, headers=SHELL_HEADERS, last_row: int = 1000):
+    """Data-validation dropdowns for the constrained columns (Platform, Format, Visual
+    Type, Status), so a new calendar enforces the allowed values. Google Sheets imports
+    these as native dropdowns on the living sheet."""
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.utils import get_column_letter
+    choices = {
+        "Platform": PLATFORM_VALUES,
+        "Format": FORMAT_VALUES,
+        "Visual Type": [rules.VT_IMAGE, rules.VT_VIDEO, rules.VT_CAROUSEL, rules.VT_RECORDED],
+        "Status": STATUS_VALUES,
+    }
+    for header, values in choices.items():
+        if header not in headers:
+            continue
+        col = get_column_letter(headers.index(header) + 1)
+        dv = DataValidation(type="list", formula1='"' + ",".join(values) + '"',
+                            allow_blank=True)  # arrow shows (showDropDown left unset)
+        ws.add_data_validation(dv)
+        dv.add(f"{col}2:{col}{last_row}")
+
+
 def build_shell_workbook(tab_title: str = DEFAULT_TAB_TITLE):
     """A header-only calendar workbook matching the team's column layout, styled to
     match the living calendar (deep-green header, ivory bold text, sage borders). The
@@ -183,6 +214,7 @@ def build_shell_workbook(tab_title: str = DEFAULT_TAB_TITLE):
     # Freeze the header row and the first FROZEN_COLUMNS columns (cell = first scrollable).
     ws.freeze_panes = f"{get_column_letter(FROZEN_COLUMNS + 1)}2"
     add_status_conditional_formatting(ws)
+    add_dropdowns(ws)
     return wb
 
 
@@ -346,6 +378,22 @@ class Calendar:
         if not prompt:
             job.skip_reason = "no prompt in Prompt column"
             return job
+        # A carousel needs a Slides count AND one prompt per slide, marked "Slide 1:",
+        # "Slide 2:", … — the prompt count must match Slides (each is its own slide).
+        if job.plan.kind == "carousel":
+            want = self._slide_count(job)  # 0 when the Slides cell is blank/invalid
+            if not want:
+                job.skip_reason = "carousel needs a Slides value (the number of slides)"
+                return job
+            got = len(parse_carousel_prompt(prompt))
+            if got == 0:
+                job.skip_reason = ("carousel Prompt has no per-slide prompts — write one per "
+                                   "slide as 'Slide 1: …', 'Slide 2: …', …")
+                return job
+            if want != got:
+                job.skip_reason = (f"carousel Prompt has {got} slide prompt(s) but the Slides "
+                                   f"column says {want} — they must match")
+                return job
 
         job.assets = self._assets_for(job)
         return job
@@ -358,15 +406,14 @@ class Calendar:
                               else config.DEFAULT_IMAGE_MODEL)
 
         if job.plan.kind == "carousel":
-            slides = self._slide_count(job)  # Slides column is authoritative for count
+            # One asset per parsed "Slide N:" prompt — each is generated individually.
+            # _build_job has already validated the count against the Slides column.
             group = str(self._get(job.row_index, "carousel_group") or "").strip() \
                 or f"{job.row_id}_{pillar_slug}"
             job.group = group
-            parsed = parse_carousel_prompt(job.prompt)
             assets = []
-            for n in range(1, slides + 1):
-                seg = parsed[n - 1] if n - 1 < len(parsed) else {}
-                desc = (seg.get("desc") or job.prompt) + _NO_TEXT_DIRECTIVE
+            for n, seg in enumerate(parse_carousel_prompt(job.prompt), start=1):
+                desc = seg["desc"] + _NO_TEXT_DIRECTIVE
                 assets.append({
                     "id": f"slide-{n}", "type": "image",
                     "prompt": desc,  # per-slide art direction, text-free
@@ -389,12 +436,13 @@ class Calendar:
         return [asset]
 
     def _slide_count(self, job: RowJob) -> int:
+        """The Slides column value, or 0 when blank/invalid (a carousel row with 0 is a
+        validation error — Slides is required)."""
         raw = self._get(job.row_index, "slides")
         try:
-            n = int(raw)
+            return int(raw)
         except (TypeError, ValueError):
-            n = 0
-        return n if n > 0 else 4  # asset-structure doc: carousels are 4–5 slides
+            return 0
 
     # --- write ----------------------------------------------------------------
     @staticmethod
