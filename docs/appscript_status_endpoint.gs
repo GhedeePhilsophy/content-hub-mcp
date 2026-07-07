@@ -72,6 +72,20 @@ function doGet() {
  *       doesn't request that scope, force it by ADDING (not replacing) it to the
  *       project's appsscript.json manifest oauthScopes:
  *           "https://www.googleapis.com/auth/spreadsheets"
+ *
+ * TROUBLESHOOTING — "Sorry, unable to open the file at this time" (Google's own gate
+ * page, shown BEFORE doGet runs):
+ *   - If it happens for EVERY non-owner account: the deployment's "Who has access" is too
+ *     narrow (often the "Only myself" default). Set it to "Anyone within <your domain>"
+ *     (or "Anyone with a Google account") and redeploy a New version.
+ *   - If a domain account works when signed in DIRECTLY but fails when SWITCHED to (with
+ *     several accounts signed in at once): that's Google's multi-account `authuser` index
+ *     bug — the web-app URL keeps a stale account index after the switch. Fix by pinning
+ *     the account in the URL with its EMAIL (robust; the numeric index shifts):
+ *           …/exec?authuser=user@your-domain.com
+ *     Or use a dedicated browser profile signed into only that account. The in-app
+ *     "Switch account" link can't fully solve this — it can't pre-set authuser for an
+ *     account the user hasn't picked yet, so per-user pinned bookmarks are the real fix.
  */
 
 /**
@@ -106,6 +120,16 @@ function getViewerInfo(sheetId) {
   var info = { email: '', effective: '' };
   try { info.email = Session.getActiveUser().getEmail() || ''; } catch (e) {}
   try { info.effective = Session.getEffectiveUser().getEmail() || ''; } catch (e) {}
+  // A "switch account" target: Google's account chooser that returns to this same app.
+  // Lets a viewer who landed on the wrong Google account re-pick in one click.
+  try {
+    var appUrl = ScriptApp.getService().getUrl();
+    if (appUrl) {
+      info.appUrl = appUrl;
+      info.switchAccountUrl =
+        'https://accounts.google.com/AccountChooser?continue=' + encodeURIComponent(appUrl);
+    }
+  } catch (e) {}
   if (sheetId) {
     try {
       info.sheetName = SpreadsheetApp.openById(sheetId).getName();

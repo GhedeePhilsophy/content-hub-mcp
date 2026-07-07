@@ -707,6 +707,7 @@ header.top .who{margin-left:auto;font-size:12px;color:var(--muted);border:1px so
   border-radius:999px;padding:4px 12px;display:inline-flex;align-items:center;gap:6px;
   white-space:nowrap;align-self:center}
 header.top .who b{color:var(--ink);font-weight:600}
+header.top .who a{color:var(--accent);font-weight:600;text-decoration:underline;white-space:nowrap}
 header.top .who.warn{color:var(--terra);border-color:var(--terra)}
 header.top .who.warn b{color:var(--terra)}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 26px}
@@ -1154,6 +1155,15 @@ function showViewer(){
         // the Workspace domain (not "Anyone"). Point at that instead of blaming the user.
         el.appendChild(document.createTextNode(' — limit web-app access to your domain to show it'));
         el.classList.add('warn');
+      }
+      if(info.switchAccountUrl){
+        // One-click recovery for viewers with several Google accounts: Google's account
+        // chooser, returning to this same app. Opens in a new tab (the page is sandboxed).
+        el.appendChild(document.createTextNode(' · '));
+        var a=document.createElement('a');
+        a.href=info.switchAccountUrl; a.target='_blank'; a.rel='noopener';
+        a.textContent='Switch account';
+        el.appendChild(a);
       }
       if(tip.length) el.title=tip.join(' · ');
       el.hidden=false;
