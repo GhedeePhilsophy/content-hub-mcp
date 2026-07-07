@@ -2,9 +2,10 @@
 
 Renders every scheduled post as a mockup in its platform's real chrome (Instagram
 feed card, Facebook post, TikTok 9:16 with the action rail), grouped by week, so a
-reviewer can approve the round in context. All post assets are read from Google
-Drive, downscaled, JPEG-compressed, and inlined as data URIs, so the page is a
-single portable file (no external assets) — safe to open locally, share, or upload
+reviewer can approve the round in context. Each row's asset is located SOLELY from
+the sheet's Generated Asset Link column — the single source of truth — then read from
+Google Drive, downscaled, JPEG-compressed, and inlined as a data URI, so the page is
+a single portable file (no external assets) — safe to open locally, share, or upload
 back to Drive. A per-calendar cache keyed by Drive md5 means a re-run only re-fetches
 assets that actually changed.
 
@@ -25,7 +26,7 @@ from pathlib import Path
 
 from . import rules
 from ..core import config
-from ..core.drive import FOLDER_MIME, GSHEET_MIME
+from ..core.drive import FOLDER_MIME, GSHEET_MIME, file_id_from_link
 
 # --- platform identity -----------------------------------------------------
 _PLATFORMS = {
@@ -167,11 +168,54 @@ def _drive_ref(drive, f: dict) -> ImageRef:
     return ImageRef(f"drive:{fid}:{tag}", lambda: drive.download_bytes(fid))
 
 
-# --- Drive asset lookup ----------------------------------------------------
+_NONE_ASSET = {"kind": "none", "images": [], "video": None}
+
+
+def _linked_asset(drive, job) -> dict:
+    """Resolve a row's asset SOLELY from its Generated Asset Link column — the sheet is
+    the single source of truth (what generate wrote, whether the model produced it or it
+    was copied from a Selected Asset). An image/video link renders as that one file; a
+    carousel's link is a group folder, listed for its slides. A blank / 'Failed' cell, a
+    non-Drive link, or a link that no longer resolves yields kind 'none' (the card shows
+    the appropriate placeholder). No Drive folder scanning / prefix matching is done."""
+    link = job.existing_link
+    if not (isinstance(link, str) and link.startswith("http")):
+        return _NONE_ASSET
+    fid = file_id_from_link(link)
+    if not fid:
+        return _NONE_ASSET
+
+    if job.plan.kind == "carousel":
+        try:
+            slides = sorted(
+                (f for f in drive.list_children(fid)
+                 if f["name"].lower().endswith((".png", ".jpg", ".jpeg"))),
+                key=lambda f: f["name"])
+        except Exception:
+            return _NONE_ASSET
+        if not slides:
+            return _NONE_ASSET
+        return {"kind": "carousel",
+                "images": [_drive_ref(drive, s) for s in slides], "video": None}
+
+    try:
+        meta = drive.get_file(fid)
+    except Exception:
+        return _NONE_ASSET
+    if meta.get("mimeType") == FOLDER_MIME:
+        return _NONE_ASSET
+    ref = _drive_ref(drive, meta)  # md5/modifiedTime keeps the thumbnail cache correct
+    if job.plan.kind == "video":
+        return {"kind": "video", "images": [], "video": ref}
+    return {"kind": "image", "images": [ref], "video": None}
+
+
+# --- calendar source -------------------------------------------------------
 class _DriveSource:
-    """Pulls a row's assets from Google Drive (route-by-type folders), keyed on the
-    Row ID prefix — mirrors the generate workflow's existence check. Each type folder
-    is listed once; image bytes are downloaded on demand and inlined."""
+    """Locates the calendar spreadsheet on Drive (the 00_Calendar & Docs folder) and
+    reads it as .xlsx. Post assets are NOT scanned here — they're resolved per row from
+    the sheet's Generated Asset Link column (see _linked_asset), which is the single
+    source of truth."""
 
     def __init__(self, drive, calendar_id: str):
         self.drive = drive
@@ -184,15 +228,7 @@ class _DriveSource:
         if not base:
             raise FileNotFoundError(f"Drive folder {folder!r} not found under the "
                                     "Social Calendar root.")
-        self.images = self._list(base, rules.SUBFOLDER_IMAGES)
-        self.videos = self._list(base, rules.SUBFOLDER_VIDEO)
-        carousel_parent = drive.find_folder_path(base, rules.SUBFOLDER_CAROUSELS)
-        self.carousels = drive.list_children(carousel_parent) if carousel_parent else []
         self.docs = drive.find_folder_path(base, [rules.SUBFOLDER_DOCS])
-
-    def _list(self, base, subpath) -> list[dict]:
-        fid = self.drive.find_folder_path(base, subpath) if base else None
-        return self.drive.list_children(fid) if fid else []
 
     def fetch_calendar(self, version: int | None) -> tuple[str, bytes, str | None, str | None]:
         """Get the calendar as .xlsx bytes. With no version, prefer the LIVING Google
@@ -223,27 +259,6 @@ class _DriveSource:
                 f"{rules.SUBFOLDER_DOCS} on Drive.")
         return (f"v{best[0]}", self.drive.download_bytes(best[1]["id"]),
                 best[1].get("webViewLink"), None)
-
-    def assets_for(self, row_id: str) -> dict:
-        pre = f"{row_id}_"
-        for c in self.carousels:
-            if c.get("mimeType") == FOLDER_MIME and c["name"].startswith(pre):
-                slides = sorted((f for f in self.drive.list_children(c["id"])
-                                 if f["name"].lower().endswith((".png", ".jpg", ".jpeg"))),
-                                key=lambda f: f["name"])
-                if slides:
-                    return {"kind": "carousel",
-                            "images": [_drive_ref(self.drive, s) for s in slides],
-                            "video": None}
-        imgs = [f for f in self.images if f["name"].startswith(pre)]
-        if imgs:
-            return {"kind": "image",
-                    "images": [_drive_ref(self.drive, imgs[0])], "video": None}
-        vids = [f for f in self.videos if f["name"].startswith(pre)]
-        if vids:
-            return {"kind": "video", "images": [],
-                    "video": _drive_ref(self.drive, vids[0])}
-        return {"kind": "none", "images": [], "video": None}
 
 
 # --- small helpers ---------------------------------------------------------
@@ -290,6 +305,8 @@ SVG = {
 def _caption_block(handle: str, caption: str) -> str:
     if not caption:
         return ""
+    if not handle:  # e.g. Facebook, where the name is in the post header, not inline
+        return f'<p class="cap">{_esc(caption)}</p>'
     return (f'<p class="cap"><span class="cap-user">{_esc(handle)}</span> '
             f'{_esc(caption)}</p>')
 
@@ -317,16 +334,8 @@ def _media_html(assets: dict, link: str | None, is_vertical: bool, recorded: boo
     if assets["kind"] == "image":
         uri = _data_uri(assets["images"][0], 800, cache)
         return f'<div class="media"><img src="{uri}" alt="post image" loading="lazy"></div>'
-    # status / poster tiles (recorded > failed > video > not-generated)
-    if recorded:
-        inner = (f'<div class="ph-icon">{SVG["film"]}</div>'
-                 f'<div class="ph-label">Recorded — Wiah to camera</div>')
-        return f'<div class="media poster">{inner}</div>'
-    if failed:
-        sub = f'<div class="ph-sub">{_esc(reason)}</div>' if reason else ""
-        inner = (f'<div class="ph-icon warn">{SVG["warn"]}</div>'
-                 f'<div class="ph-label">Generation failed</div>{sub}')
-        return f'<div class="media poster fail">{inner}</div>'
+    # A resolved clip (AI hero video OR one of Wiah's recorded clips) shows its poster
+    # frame + play button, whatever the Visual Type — the linked asset wins.
     if assets["kind"] == "video":
         ar = "vert" if is_vertical else "wide"
         poster = _video_poster_uri(assets["video"], 720, cache) if assets.get("video") else None
@@ -340,6 +349,16 @@ def _media_html(assets: dict, link: str | None, is_vertical: bool, recorded: boo
         inner = (f'<{tag} class="ph-icon play" title="Open clip on Drive"{attrs}>'
                  f'{SVG["play"]}</{tag}><div class="ph-label">Video preview</div>')
         return f'<div class="media poster {ar}">{inner}</div>'
+    # no resolved asset -> a status / placeholder tile (failed > recorded > not-generated)
+    if failed:
+        sub = f'<div class="ph-sub">{_esc(reason)}</div>' if reason else ""
+        inner = (f'<div class="ph-icon warn">{SVG["warn"]}</div>'
+                 f'<div class="ph-label">Generation failed</div>{sub}')
+        return f'<div class="media poster fail">{inner}</div>'
+    if recorded:
+        inner = (f'<div class="ph-icon">{SVG["film"]}</div>'
+                 f'<div class="ph-label">Recorded — Wiah to camera</div>')
+        return f'<div class="media poster">{inner}</div>'
     return '<div class="media poster"><div class="ph-label">Not generated yet</div></div>'
 
 
@@ -545,8 +564,10 @@ def build_preview(calendar_id: str, version: int | None = None, *,
     label, xlsx_bytes, sheet_link, sheet_id = drive_source.fetch_calendar(version)
     emit(f"calendar: {calendar_id} ({label}) from Drive")
 
-    def resolve(row_id: str) -> dict:
-        return drive_source.assets_for(row_id)
+    def resolve(job) -> dict:
+        # The sheet's Generated Asset Link column is the single source of truth for what
+        # a row displays (covers model-generated and Selected-Asset-copied assets alike).
+        return _linked_asset(client, job)
 
     cal = Calendar(io.BytesIO(xlsx_bytes))
     jobs = [j for j in cal.read_jobs() if j.row_id]
@@ -573,7 +594,7 @@ def build_preview(calendar_id: str, version: int | None = None, *,
         approved = sum(1 for j in wposts if _status_kind(j.status) == "ok")
         pct = round(100 * approved / len(wposts)) if wposts else 0
         for j in wposts:
-            assets = resolve(j.row_id)
+            assets = resolve(j)
             if assets["kind"] in ("image", "carousel"):
                 n_asset += 1
             cards.append(_card(j, assets, cache, sheet_link))
@@ -682,6 +703,12 @@ header.top{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px;
 header.top h1{font-family:Georgia,"Times New Roman",serif;font-weight:600;font-size:26px;
   letter-spacing:.2px;margin:0;text-wrap:balance}
 header.top .sub{color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.12em}
+header.top .who{margin-left:auto;font-size:12px;color:var(--muted);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;display:inline-flex;align-items:center;gap:6px;
+  white-space:nowrap;align-self:center}
+header.top .who b{color:var(--ink);font-weight:600}
+header.top .who.warn{color:var(--terra);border-color:var(--terra)}
+header.top .who.warn b{color:var(--terra)}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 26px}
 .chip{cursor:pointer;border:1px solid var(--line);background:var(--surface);color:var(--ink);
   border-radius:999px;padding:6px 14px;font-size:13px;font-weight:600;display:inline-flex;gap:7px;align-items:center}
@@ -895,7 +922,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
 :root[data-theme="dark"] .totop-btn{background:var(--gold);color:#17281E}
 </style>
 <div class="wrap">
-  <header class="top"><h1>Ghedee Social Calendar</h1><span class="sub">{{SUBTITLE}}</span></header>
+  <header class="top"><h1>Ghedee Social Calendar</h1><span class="sub">{{SUBTITLE}}</span><span class="who" id="who" hidden></span></header>
   {{CHIPS}}
   {{STATUS_CHIPS}}
   <div id="feed">{{SECTIONS}}</div>
@@ -1100,8 +1127,43 @@ function hydrateStatuses(){
     .withFailureHandler(function(){ /* keep the static snapshot on failure */ })
     .getPostStatuses(SHEET_ID);
 }
+function showViewer(){
+  // Who's viewing (+ whether they can reach the sheet) — surfaces access problems: a
+  // teammate signed into the wrong Google account, or one the sheet isn't shared with.
+  if(typeof google.script.run.getViewerInfo !== 'function') return;
+  var el=document.getElementById('who'); if(!el) return;
+  google.script.run
+    .withSuccessHandler(function(info){
+      if(!info) return;
+      el.textContent='';
+      var noAccess = info.canOpenSheet===false;
+      var email = info.email;  // ACTIVE (viewing) user; blank unless the app can identify them
+      el.appendChild(document.createTextNode((noAccess||!email?'⚠ ':'')+'Signed in as '));
+      var b=document.createElement('b');
+      b.textContent = email || 'account not detected';
+      el.appendChild(b);
+      var tip=[];
+      if(info.effective) tip.push('script runs as: '+info.effective);
+      if(info.sheetName) tip.push('sheet: '+info.sheetName);
+      if(noAccess){
+        el.appendChild(document.createTextNode(' — no access to the calendar sheet'));
+        if(info.sheetError) tip.push(info.sheetError);
+        el.classList.add('warn');
+      } else if(!email){
+        // Google only reveals the viewer's email when the web app's access is limited to
+        // the Workspace domain (not "Anyone"). Point at that instead of blaming the user.
+        el.appendChild(document.createTextNode(' — limit web-app access to your domain to show it'));
+        el.classList.add('warn');
+      }
+      if(tip.length) el.title=tip.join(' · ');
+      el.hidden=false;
+    })
+    .withFailureHandler(function(){ /* leave the badge hidden if the probe fails */ })
+    .getViewerInfo(SHEET_ID);
+}
 (function initLive(){
   if(!(window.google && google.script && google.script.run && SHEET_ID)) return;
+  showViewer();  // show the viewer's identity whether or not editing is enabled
   // Enable editing only if the setPostStatus endpoint is deployed — otherwise stay
   // read-only rather than offering a dropdown whose changes can't be saved.
   if(typeof google.script.run.setPostStatus === 'function'){

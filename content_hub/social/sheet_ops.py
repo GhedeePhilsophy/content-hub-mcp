@@ -81,6 +81,7 @@ def create(calendar_id: str, dest_dir, *, replace: bool = False,
     base = drive.find_or_create_folder(folder, root)
     docs = drive.ensure_path(base, [rules.SUBFOLDER_DOCS])
     # Pre-create the asset folders generate later routes uploads into.
+    drive.ensure_path(base, list(rules.SUBFOLDER_WIAH_VIDEOS))
     drive.ensure_path(base, list(rules.SUBFOLDER_IMAGES))
     drive.ensure_path(base, list(rules.SUBFOLDER_VIDEO))
     drive.ensure_path(base, list(rules.SUBFOLDER_CAROUSELS))

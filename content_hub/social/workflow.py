@@ -24,10 +24,92 @@ from pathlib import Path
 from . import rules
 from .calendar import Calendar
 from ..core import config, media
-from ..core.drive import FOLDER_MIME
+from ..core.drive import FOLDER_MIME, file_id_from_link
 
 MOCK_SUBFOLDER = "_mock rehearsal"
 FAILED_TEXT = "Failed"  # written into the asset-link cell when a row can't be produced
+
+
+def _uses_selected(job) -> bool:
+    """True when this row should be filled from its Selected Asset Link instead of
+    generating. Applies to single-image and single-video rows; a lone link can't
+    populate a multi-slide carousel, so carousels always generate."""
+    return bool(job.selected_link) and job.plan.kind in ("image", "video")
+
+
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+_VIDEO_EXTS = (".mp4", ".mov", ".m4v", ".webm")
+
+
+def _drive_target_from_link(drive, link: str, ext: str) -> str | None:
+    """The concrete Drive FILE id for a Selected Asset Drive link. A file link resolves to
+    itself; a FOLDER link (…/drive/folders/<id>) resolves to the single file inside that
+    matches the target type (image for .png, video for .mp4). Raises a clear error if the
+    folder is empty of matches or holds several candidates — link the specific file then."""
+    fid = file_id_from_link(link)
+    if not fid or "/folders/" not in link:
+        return fid  # a direct file link (or unparseable -> caller raises)
+    exts = _VIDEO_EXTS if ext.lower() in _VIDEO_EXTS else _IMAGE_EXTS
+    kindword = "video" if exts is _VIDEO_EXTS else "image"
+    files = [c for c in drive.list_children(fid) if c.get("mimeType") != FOLDER_MIME]
+    matches = [c for c in files if c["name"].lower().endswith(exts)]
+    if len(matches) == 1:
+        return matches[0]["id"]
+    if not matches:
+        raise FileNotFoundError(
+            f"the linked folder has no {kindword} file to copy — "
+            "link the specific file, not the folder")
+    raise ValueError(
+        f"the linked folder has {len(matches)} {kindword} files — "
+        "link the specific file, not the folder")
+
+
+def _fetch_selected(drive, link: str, out_path: Path) -> None:
+    """Place the Selected Asset (a Drive file/folder share link, a plain http(s) URL, or a
+    local path) at ``out_path``. Raises if the source can't be reached/read so the caller
+    can record the failure and move on."""
+    import shutil
+
+    link = link.strip()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if "drive.google" in link or "docs.google" in link:
+        fid = _drive_target_from_link(drive, link, out_path.suffix)
+        if not fid:
+            raise ValueError(f"could not parse a Drive file id from link: {link}")
+        drive.download_file(fid, out_path)
+    elif link.lower().startswith(("http://", "https://")):
+        import urllib.request
+        urllib.request.urlretrieve(link, out_path)  # noqa: S310 (trusted, human-entered)
+    else:
+        src = Path(link)
+        if not src.is_file():
+            raise FileNotFoundError(f"selected asset not found: {link}")
+        shutil.copyfile(src, out_path)
+
+
+def _use_selected_asset(drive, job, out_dir: Path, emit) -> dict:
+    """A run_batch-shaped receipt built by copying the row's Selected Asset into the
+    location the generated image would have occupied — no image model is called. If the
+    source can't be fetched, the asset is recorded as an error (and the row is later
+    marked Failed like any other generation failure) and we keep going."""
+    receipt = {"batch_id": job.row_id, "outputs": [], "errors": [], "hints": []}
+    for asset in job.assets:
+        target_dir = media.asset_target_dir(out_dir, asset)
+        ext = ".mp4" if asset.get("type") == "video" else ".png"  # match the model's output name
+        for n in media.revision_numbers(asset):
+            out_path = target_dir / f"{asset['id']}_v{n}{ext}"
+            try:
+                _fetch_selected(drive, job.selected_link, out_path)
+                emit(f"  select -> {out_path.name}  (copied from Selected Asset Link)")
+                receipt["outputs"].append({"file": str(out_path), "model": "selected-asset",
+                                           "est_cost_usd": 0.0})
+            except Exception as e:
+                short, _ = media.friendly_error(e)
+                receipt["errors"].append({"id": asset.get("id"), "error": str(e),
+                                          "reason": f"selected asset unavailable: {short}"})
+                emit(f"  FAILED -> {asset.get('id')}: selected asset unavailable ({short})",
+                     err=True)
+    return receipt
 
 
 def _stderr_emit(msg: str, *, err: bool = False) -> None:
@@ -63,6 +145,8 @@ def _kind_parent(drive, base_folder: str, job) -> str:
     subfolder is created only when actually generating — not during the existence check."""
     if job.plan.kind == "carousel":
         return drive.ensure_path(base_folder, list(rules.SUBFOLDER_CAROUSELS))
+    if job.plan.recorded:  # Wiah's own clip -> 01_Wiah Videos (not the AI video folder)
+        return drive.ensure_path(base_folder, list(rules.SUBFOLDER_WIAH_VIDEOS))
     if job.plan.kind == "video":
         return drive.ensure_path(base_folder, list(rules.SUBFOLDER_VIDEO))
     return drive.ensure_path(base_folder, list(rules.SUBFOLDER_IMAGES))
@@ -84,6 +168,53 @@ def _already_on_drive(drive, parent: str, job) -> str | None:
         return None
     hits = drive.find_by_prefix(f"{job.row_id}_", parent)
     return hits[0].get("webViewLink") if hits else None
+
+
+def _drive_md5(drive, file_id: str) -> str | None:
+    try:
+        return drive.get_file(file_id).get("md5Checksum")
+    except Exception:
+        return None
+
+
+def _selected_source_md5(drive, link: str, ext: str) -> str | None:
+    """The MD5 of the Selected Asset's content: a Drive file's checksum (resolving a folder
+    link to its one matching file, like the copy does) or a local file's hash. None for a
+    remote URL, a Google-native file, an ambiguous folder, or anything we can't checksum —
+    callers treat None as 'can't verify' and re-copy to be safe."""
+    link = (link or "").strip()
+    if "drive.google" in link or "docs.google" in link:
+        try:
+            fid = _drive_target_from_link(drive, link, ext)
+        except Exception:
+            return None  # empty/ambiguous folder -> re-copy; the copy will error clearly
+        return _drive_md5(drive, fid) if fid else None
+    if link.lower().startswith(("http://", "https://")):
+        return None  # don't refetch a remote URL just to compare
+    try:
+        import hashlib
+        p = Path(link)
+        if p.is_file():
+            return hashlib.md5(p.read_bytes()).hexdigest()
+    except Exception:
+        pass
+    return None
+
+
+def _selected_asset_changed(drive, parent: str, job) -> bool:
+    """For a Selected-Asset row that already has a copy on Drive: True if the Selected
+    Asset now points at DIFFERENT content than that copy (=> re-copy), False if it's the
+    same (=> skip). Compared by MD5 (Drive's checksum equals a local hash for identical
+    bytes). If either side can't be checksummed we return True, so an intended change is
+    never silently skipped."""
+    ext = ".mp4" if job.plan.kind == "video" else ".png"
+    sel = _selected_source_md5(drive, job.selected_link, ext)
+    if sel is None:
+        return True
+    hits = drive.find_by_prefix(f"{job.row_id}_", parent)
+    if not hits:
+        return True
+    return _drive_md5(drive, hits[0]["id"]) != sel
 
 
 # --- writeback target -------------------------------------------------------
@@ -187,6 +318,13 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
     if mode == "dry-run":
         total = 0.0
         for j in in_scope:
+            if _uses_selected(j):
+                # Copied from the Selected Asset Link — no model call, no cost.
+                result["rows"].append({"row_id": j.row_id, "kind": j.plan.kind,
+                                       "aspect_ratio": j.plan.aspect_ratio,
+                                       "assets": len(j.assets), "action": "would-copy-selected",
+                                       "cost_usd": 0.0})
+                continue
             rec = media.run_batch(j.assets, defaults=media.DEFAULTS, out_dir=out_dir,
                                   mode="dry-run", emit=emit, batch_id=j.row_id)
             total += rec["estimated_cost_usd"]
@@ -207,9 +345,13 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
         # Init only the client(s) the in-scope assets actually need: images -> OpenAI
         # (gpt-image-2), video -> google-genai (Veo). An image-only run never needs a
         # Gemini key, and vice-versa.
-        if any(a["type"] == "image" for j in in_scope for a in j.assets):
+        # Rows filled from a Selected Asset Link never call the image model, so a run
+        # made up entirely of those doesn't need an OpenAI key/client.
+        if any(a["type"] == "image" for j in in_scope if not _uses_selected(j)
+               for a in j.assets):
             image_client = media.init_image_client()
-        if any(a["type"] == "video" for j in in_scope for a in j.assets):
+        if any(a["type"] == "video" for j in in_scope if not _uses_selected(j)
+               for a in j.assets):
             video_client, types = media.init_video_client()
         from ..core.sheets import SheetsClient
         writer = _SheetWriter(SheetsClient(config.credentials_path(), config.token_path()),
@@ -225,9 +367,16 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
     for job in in_scope:
         parent = _kind_parent(drive, base_folder, job)
         existing = _already_on_drive(drive, parent, job)
+        # A Selected-Asset row is only "already done" if the on-Drive copy still matches
+        # the Selected Asset Link; if the link now points at a different file, re-copy.
+        if existing and _uses_selected(job) and _selected_asset_changed(drive, parent, job):
+            emit(f"  update -> {job.row_id} (Selected Asset changed; re-copying)")
+            existing = None
         if existing:
             result["skipped_existing"] += 1
-            est = media.estimate_cost(job.assets)
+            # A copied (Selected Asset) row — incl. recorded-Wiah clips — has no
+            # generation cost; only truly generated assets carry an estimate.
+            est = 0.0 if _uses_selected(job) else media.estimate_cost(job.assets)
             result["rows"].append({"row_id": job.row_id, "kind": job.plan.kind,
                                    "action": "skipped-existing", "link": existing,
                                    "cost_usd": est})
@@ -235,10 +384,14 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
             writer.write_note(job.row_index, "")  # clear any stale failure note
             continue
 
-        rec = media.run_batch(job.assets, defaults=media.DEFAULTS, out_dir=out_dir,
-                              mode=mode, emit=emit, batch_id=job.row_id,
-                              image_client=image_client, video_client=video_client,
-                              types=types)
+        if _uses_selected(job):
+            # Copy the human-picked asset into the target location instead of generating.
+            rec = _use_selected_asset(drive, job, out_dir, emit)
+        else:
+            rec = media.run_batch(job.assets, defaults=media.DEFAULTS, out_dir=out_dir,
+                                  mode=mode, emit=emit, batch_id=job.row_id,
+                                  image_client=image_client, video_client=video_client,
+                                  types=types)
         hints.update(rec.get("hints", []))
         outputs = [o for o in rec["outputs"] if not o.get("dry_run")]
         if rec["errors"] or not outputs:
