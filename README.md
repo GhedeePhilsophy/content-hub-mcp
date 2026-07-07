@@ -48,30 +48,47 @@ reuses `core.media` + `core.drive` for the three shared primitives.
 
 ## How a calendar row becomes media
 
-Only rows with **Status = Draft** and Visual Type `AI text-to-image` /
-`AI text-to-video` are generated. `Recorded video of Wiah` rows are never
-AI-generated — they're Wiah's own clips, so they only come from a **`Selected Asset
+Each entry is described by **`Platform`** (`Instagram` / `Facebook` / `Tiktok`) +
+**`Format`** (`Post` / `Reel` / `Carousel`) — e.g. "Instagram Reel". Only rows with
+**Status = Draft** and Visual Type `AI text-to-image` / `AI text-to-video` /
+`AI text-to-carousel` are generated. `Recorded video of Wiah` rows are never
+AI-generated — they're Wiah's own clips, so they only come from a **`Created Asset
 Link`** (copied into `01_Wiah Videos`); without one the row is left alone until the
-film is uploaded. Aspect ratio is **derived per row** (Visual Type first, Format
-second — the `Format` column alone is ambiguous):
+film is uploaded. Kind + aspect ratio are **derived from Visual Type**:
 
 | Visual Type | Format | Kind | Aspect | Files |
 |---|---|---|---|---|
-| AI text-to-video | any | video | 16:9 | 1 (`{RowID}_{Plat}_{Slug}_v1.mp4`) |
-| AI text-to-image | `Carousel` | carousel | 4:5 | N slides (`slide-1..N_v1.png` in a group folder) |
-| AI text-to-image | anything else | image | 1:1 | 1 (`{RowID}_{Plat}_{Slug}_v1.png`) |
-| Recorded video of Wiah | any | video (copied) | 9:16 | 1 in `01_Wiah Videos`, from the Selected Asset only |
+| AI text-to-carousel | `Carousel` | carousel | 4:5 | N slides (`slide-1..N_v1.png` in a group folder) |
+| AI text-to-video | `Reel` | video | 9:16 | 1 (`{RowID}_{Plat}_{Slug}_v1.mp4`) |
+| AI text-to-video | `Post` | video | 16:9 | 1 (`{RowID}_{Plat}_{Slug}_v1.mp4`) |
+| AI text-to-image | `Post` | image | 1:1 | 1 (`{RowID}_{Plat}_{Slug}_v1.png`) |
+| Recorded video of Wiah | `Reel` | video (copied) | 9:16 | 1 in `01_Wiah Videos`, from the Created Asset only |
 
-Carousels read a **`Slides`** column for the slide count (defaults to 4). The
-Row ID is the stable key: the Drive existence check matches on the `{RowID}_`
-prefix, so editing a hook never orphans an already-generated file.
+(`AI text-to-image` + Format `Carousel` is still accepted as a carousel for backward
+compatibility.) The Row ID is the stable key: the Drive existence check matches on the
+`{RowID}_` prefix, so editing a headline never orphans an already-generated file.
+
+**Carousel prompts:** the Prompt cell holds one prompt per slide, each marked
+`Slide N:` (a dash `—`/`-` is also accepted) — each is generated as its own slide:
+
+```
+Slide 1: a serene forest at dawn, mist rising through tall pines
+Slide 2: a lone figure on a mountain path, seen from behind
+Slide 3: sunrise breaking over a wide valley, golden light
+```
+
+The **`Slides`** column is required for a carousel and the number of prompts must
+match it; a blank `Slides` or a mismatch fails the row with a clear message. Optional
+extras: a trailing `Style: …` / `Palette: …` clause applies to every slide, and a
+per-slide `On-image text: "…"` supplies overlay wording (the art is rendered text-free
+and the words are stamped on afterward).
 
 **Idempotency:** a row is **skipped** if its asset already exists on Drive.
 **Deleting the Drive file (or a carousel's group folder) is how you request a
 regeneration.**
 
 **Bring-your-own asset:** if a single-image or single-video row's
-**`Selected Asset Link`** column (just after `Generated Asset Link (Drive)`) is
+**`Created Asset Link`** column (just after `Generated Asset Link`) is
 filled, generate skips the model and instead **copies that asset** into the file
 the model would have produced — an image into the `.png` slot, a video into the
 `.mp4` slot (accepts a Drive share link, a plain `http(s)` URL, or a local path).
@@ -79,8 +96,8 @@ If the source can't be reached the row is marked `Failed` and the run continues.
 (Carousels always generate — a single link can't fill multiple slides.)
 
 For these rows the idempotency check is content-aware: if the copy already on
-Drive matches the Selected Asset (compared by MD5) it's skipped; if you **point the
-Selected Asset Link at a different file, the next generate re-copies** it (no need
+Drive matches the Created Asset (compared by MD5) it's skipped; if you **point the
+Created Asset Link at a different file, the next generate re-copies** it (no need
 to delete the old Drive file first).
 
 ## Three modes (every tool + CLI command)
