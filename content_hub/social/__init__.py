@@ -3,7 +3,8 @@
   rules      calendar naming, id→folder, aspect-ratio rules, Drive layout
   calendar   parse the calendar → jobs; write results back
   workflow   generate_media
-  sheet_ops  upload / download / snapshot for the living Google Sheet
+  sheet_ops  create the living Google Sheet
+  edit_ops   direct in-place cell edits + bulk row appends to the living sheet
   preview    the HTML review page
 
 Operations are re-exported here so callers can use
@@ -11,7 +12,9 @@ Operations are re-exported here so callers can use
 """
 
 from .workflow import generate_media
-from .sheet_ops import create, upload, download, snapshot
+from .sheet_ops import create
+from .edit_ops import edit_rows, add_rows
 
-__all__ = ["generate_media", "create", "upload", "download", "snapshot",
-           "rules", "calendar", "workflow", "sheet_ops", "preview"]
+__all__ = ["generate_media", "create",
+           "edit_rows", "add_rows",
+           "rules", "calendar", "workflow", "sheet_ops", "edit_ops", "preview"]
