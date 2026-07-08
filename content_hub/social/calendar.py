@@ -375,25 +375,30 @@ class Calendar:
         if not plan.generate:
             job.skip_reason = plan.reason
             return job
-        if not prompt:
-            job.skip_reason = "no prompt in Prompt column"
-            return job
-        # A carousel needs a Slides count AND one prompt per slide, marked "Slide 1:",
-        # "Slide 2:", … — the prompt count must match Slides (each is its own slide).
+        # A carousel needs a Slides count. Its slides come from either the Prompt (one
+        # "Slide N:" prompt per slide, count must match Slides) OR — when a Created Asset
+        # Link is set — the images in that folder (count checked against Slides at generate
+        # time). Handled here so a folder-sourced carousel isn't rejected for an empty Prompt.
         if job.plan.kind == "carousel":
             want = self._slide_count(job)  # 0 when the Slides cell is blank/invalid
             if not want:
                 job.skip_reason = "carousel needs a Slides value (the number of slides)"
                 return job
-            got = len(parse_carousel_prompt(prompt))
-            if got == 0:
-                job.skip_reason = ("carousel Prompt has no per-slide prompts — write one per "
-                                   "slide as 'Slide 1: …', 'Slide 2: …', …")
-                return job
-            if want != got:
-                job.skip_reason = (f"carousel Prompt has {got} slide prompt(s) but the Slides "
-                                   f"column says {want} — they must match")
-                return job
+            if not job.selected_link:
+                got = len(parse_carousel_prompt(prompt))
+                if got == 0:
+                    job.skip_reason = ("carousel Prompt has no per-slide prompts — write one "
+                                       "per slide as 'Slide 1: …', 'Slide 2: …', …")
+                    return job
+                if want != got:
+                    job.skip_reason = (f"carousel Prompt has {got} slide prompt(s) but the "
+                                       f"Slides column says {want} — they must match")
+                    return job
+            job.assets = self._assets_for(job)
+            return job
+        if not prompt:
+            job.skip_reason = "no prompt in Prompt column"
+            return job
 
         job.assets = self._assets_for(job)
         return job
@@ -406,11 +411,16 @@ class Calendar:
                               else config.DEFAULT_IMAGE_MODEL)
 
         if job.plan.kind == "carousel":
-            # One asset per parsed "Slide N:" prompt — each is generated individually.
-            # _build_job has already validated the count against the Slides column.
+            # One asset per slide. Slides come from the Prompt's "Slide N:" prompts, or —
+            # when a Created Asset Link is set — from the images in that folder (filled at
+            # generate time), so build slide placeholders by the Slides count.
             group = str(self._get(job.row_index, "carousel_group") or "").strip() \
                 or f"{job.row_id}_{pillar_slug}"
             job.group = group
+            if job.selected_link:
+                return [{"id": f"slide-{i}", "type": "image", "group": group,
+                         "usage": f"{plat_short.lower()}-carousel"}
+                        for i in range(1, self._slide_count(job) + 1)]
             assets = []
             for n, seg in enumerate(parse_carousel_prompt(job.prompt), start=1):
                 desc = seg["desc"] + _NO_TEXT_DIRECTIVE

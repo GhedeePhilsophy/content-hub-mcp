@@ -92,13 +92,17 @@ regeneration.**
 filled, generate skips the model and instead **copies that asset** into the file
 the model would have produced — an image into the `.png` slot, a video into the
 `.mp4` slot (accepts a Drive share link, a plain `http(s)` URL, or a local path).
-If the source can't be reached the row is marked `Failed` and the run continues.
-(Carousels always generate — a single link can't fill multiple slides.)
+If the source can't be reached the row is marked `Failed` and the run continues. A
+**carousel** row's Created Asset Link points at a **Drive folder**: its images, in
+**alphabetical order**, become the slides. Both that source folder and the existing
+destination folder must hold exactly `Slides` images, or the row errors (a stale
+destination left over from a different slide count is caught before anything is written).
 
-For these rows the idempotency check is content-aware: if the copy already on
-Drive matches the Created Asset (compared by MD5) it's skipped; if you **point the
-Created Asset Link at a different file, the next generate re-copies** it (no need
-to delete the old Drive file first).
+For these rows the idempotency check is content-aware (compared by MD5): if the copy
+already on Drive matches the Created Asset it's skipped, and pointing the Created Asset
+Link at a different file makes the next generate **re-copy** it (no need to delete the
+old Drive file first). For a folder-sourced carousel this is per-slide — only the slides
+whose source image changed are re-uploaded.
 
 ## Three modes (every tool + CLI command)
 
