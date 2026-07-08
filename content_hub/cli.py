@@ -8,17 +8,19 @@ are namespaced by workflow — ``<workflow> <operation>`` here mirrors the
 blog and email register the same way later.
 
   python -m content_hub.cli auth                                    # one-time Drive consent
-  python -m content_hub.cli social create   Q3_2026 --out ./work
+  python -m content_hub.cli social create   Q3_2026
+  python -m content_hub.cli social add      Q3_2026 @rows.json --mode dry-run
+  python -m content_hub.cli social edit     Q3_2026 @edits.json --mode live
   python -m content_hub.cli social generate Q3_2026 --mode dry-run
   python -m content_hub.cli social generate Q3_2026 --mode mock
   python -m content_hub.cli social generate Q3_2026 --mode live
-  python -m content_hub.cli social upload   Q3_2026 ./work/Ghedee_Social_Calendar_Q3_2026_v1.xlsx
-  python -m content_hub.cli social download Q3_2026 --out ./work
+
+Everything lives on the LIVING Google Sheet — there is no local .xlsx round-trip.
 
 Modes:
   dry-run  plan only. No Drive, no API, nothing written.
   mock     placeholder files; uploads + write-back go to a SAFE mock destination
-           and a *.mock.xlsx copy. Production assets are never touched.
+           and a *.mock.xlsx copy. Production assets are never touched. (generate only.)
   live     the real thing (spends credits, writes to Drive + the working sheet).
 """
 
@@ -30,11 +32,19 @@ import sys
 
 from .core import config
 from . import social
-from .social import preview, sheet_ops, rules
+from .social import preview, sheet_ops
 
 
 def _print_result(res: dict) -> None:
     print(json.dumps(res, indent=2, ensure_ascii=False))
+
+
+def _load_json_arg(value: str):
+    """Parse a JSON CLI argument that is either inline JSON or ``@path`` to a .json file
+    (used by `add`/`edit` for their list-of-dicts payloads)."""
+    from pathlib import Path
+    text = Path(value[1:]).read_text(encoding="utf-8") if value.startswith("@") else value
+    return json.loads(text)
 
 
 # --- auth (content-agnostic Drive consent) ---------------------------------
@@ -74,30 +84,31 @@ def _register_social(workflows) -> None:
         video_model=a.video_model, video_duration=a.video_duration))
 
     c = ops.add_parser("create", help="Initialise a new calendar: Drive folders + an empty "
-                       "living Google Sheet shell; returns a local shell .xlsx to fill in.")
+                       "living Google Sheet shell (fill it with `add`).")
     c.add_argument("calendar_id", help="A quarter (Q3_2026), a date range, or a single day; "
                    "it is the Drive folder name.")
-    c.add_argument("--out", help="Destination directory for the shell .xlsx "
-                   "(default: the calendar dir).")
     c.add_argument("--replace", action="store_true",
                    help="Recreate an empty shell even if a live sheet exists (trashes the old).")
-    c.set_defaults(func=lambda a: sheet_ops.create(
-        a.calendar_id, a.out or str(rules.calendar_dir()), replace=a.replace))
+    c.set_defaults(func=lambda a: sheet_ops.create(a.calendar_id, replace=a.replace))
 
-    u = ops.add_parser("upload", help="Create the living Google Sheet from a local .xlsx.")
-    u.add_argument("calendar_id")
-    u.add_argument("source_path", help="Path to the local .xlsx to upload.")
-    u.add_argument("--replace", action="store_true",
-                   help="Overwrite an existing live sheet from this .xlsx (trashes the old).")
-    u.set_defaults(func=lambda a: sheet_ops.upload(
-        a.calendar_id, a.source_path, replace=a.replace))
+    ad = ops.add_parser("add", help="Append new rows to the live sheet in bulk "
+                        "(each row is a {header: value} dict; a Row ID is required).")
+    ad.add_argument("calendar_id")
+    ad.add_argument("rows", help="Inline JSON list of row dicts, or @path to a .json file.")
+    ad.add_argument("--mode", choices=["dry-run", "live"], default="dry-run")
+    ad.set_defaults(func=lambda a: social.add_rows(
+        a.calendar_id, _load_json_arg(a.rows), mode=a.mode))
 
-    d = ops.add_parser("download", help="Export the living Google Sheet to a local .xlsx "
-                       "for Cowork to ingest.")
-    d.add_argument("calendar_id")
-    d.add_argument("--out", help="Destination directory (default: the calendar dir).")
-    d.set_defaults(func=lambda a: sheet_ops.download(
-        a.calendar_id, a.out or str(rules.calendar_dir())))
+    ed = ops.add_parser("edit", help="Edit cells of existing rows in the live sheet "
+                        "(each edit is {row_id, column, value}).")
+    ed.add_argument("calendar_id")
+    ed.add_argument("edits", help="Inline JSON list of edit dicts, or @path to a .json file.")
+    ed.add_argument("--mode", choices=["dry-run", "live"], default="dry-run")
+    ed.add_argument("--force", action="store_true",
+                    help="Allow overwriting the machine-owned columns (Generated Asset Link "
+                         "/ Est. Cost / AI Model).")
+    ed.set_defaults(func=lambda a: social.edit_rows(
+        a.calendar_id, _load_json_arg(a.edits), mode=a.mode, force=a.force))
 
     p2 = ops.add_parser("preview", help="Build a self-contained HTML review page of the posts.")
     p2.add_argument("calendar_id")
@@ -111,11 +122,6 @@ def _register_social(workflows) -> None:
     p2.set_defaults(func=lambda a: preview.build_preview(
         a.calendar_id, a.version, out_path=a.out,
         no_cache=a.no_cache, publish=not a.no_publish))
-
-    sn = ops.add_parser("snapshot", help="Export the living Google Sheet to the next "
-                        "versioned .xlsx snapshot on Drive.")
-    sn.add_argument("calendar_id")
-    sn.set_defaults(func=lambda a: sheet_ops.snapshot(a.calendar_id))
 
 
 def main(argv: list[str] | None = None) -> int:

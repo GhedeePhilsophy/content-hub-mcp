@@ -10,11 +10,10 @@ in place. The tools:
 
 | Tool | What it does |
 |---|---|
-| `social_create_calendar` | Start a new calendar: create the Drive folder tree (folder named by the Calendar ID) + an empty, styled living-sheet shell in `00_Calendar & Docs`, and write a local `Ghedee_Social_Calendar_<id>_v1.xlsx` into the caller's `dest_dir` for Cowork to fill in. |
-| `social_generate_media` | Read the live sheet's Draft rows → generate the missing AI images/videos → upload to Drive → write each link / cost / model / notes back **into the live sheet in place** (Sheets API — no download/re-upload). |
-| `social_upload_calendar` | Create the living Google Sheet from a local `.xlsx` at `source_path` (`--replace` to overwrite). |
-| `social_download_calendar` | Export the living sheet to a local `.xlsx` in the caller's `dest_dir` so Cowork can ingest current edits. |
-| `social_snapshot_calendar` | Export the living sheet to the next `_v<N>.xlsx` on Drive (a frozen approval-round record). |
+| `social_create_calendar` | Start a new calendar: create the Drive folder tree (folder named by the Calendar ID) + an empty, styled living-sheet shell in `00_Calendar & Docs`. Cowork fills it in with `social_add_rows` — no local file. |
+| `social_add_rows` | Append **new** rows to the live sheet in bulk (this is how you seed a fresh calendar). Each row is keyed by header name and must carry a Row ID; new rows default to Status `Draft`, and an approval status can't be set. |
+| `social_edit_calendar` | Edit cells of **existing** rows in the live sheet in place. Edits name a row by **Row ID** and a column by header name; only the named cells are written. Status is not editable (human-only approval); the machine-owned columns are `force`-gated. |
+| `social_generate_media` | Read the live sheet's Draft rows → generate the missing AI images/videos → upload to Drive → write each link / cost / model / notes back **into the live sheet in place** (Sheets API). |
 | `social_build_preview` | Build an HTML review page from the live sheet and publish it next to the calendar as `Ghedee_Social_Calendar_<id>_preview.html`. |
 
 Metricool publishing is planned for a later phase.
@@ -143,13 +142,17 @@ After that every headless run (server, `mock`, `live`) reuses `token.json`.
 ## The calendar lifecycle
 
 ```bash
-# 0. Start a brand-new calendar: Drive folders + an empty living-sheet shell, and a
-#    local shell .xlsx to fill in. The Calendar ID is the Drive folder name verbatim
-#    (a quarter, a date range, or a single day). --out is where the shell is written:
-python -m content_hub.cli social create Q3_2026 --out ./work   # -> ./work/Ghedee_Social_Calendar_Q3_2026_v1.xlsx
+# 0. Start a brand-new calendar: Drive folders + an empty living-sheet shell. The
+#    Calendar ID is the Drive folder name verbatim (a quarter, a date range, or a day):
+python -m content_hub.cli social create Q3_2026
 
-# 1. Seed the living Google Sheet from a local Cowork draft (one-time), by file path:
-python -m content_hub.cli social upload Q3_2026 ./work/Ghedee_Social_Calendar_Q3_2026_v1.xlsx
+# 1. Seed the living Google Sheet by appending rows directly (bulk). rows.json is a
+#    JSON list of {header: value} dicts, each with a Row ID; dry-run previews first:
+python -m content_hub.cli social add Q3_2026 @rows.json --mode dry-run
+python -m content_hub.cli social add Q3_2026 @rows.json --mode live
+
+# 1b. Later tweaks: edit cells of existing rows in place (by Row ID + column):
+python -m content_hub.cli social edit Q3_2026 '[{"row_id":"IG-014","column":"Caption","value":"New copy"}]' --mode live
 
 # 2. Generate media and write links/cost/model/notes back INTO the live sheet:
 python -m content_hub.cli social generate Q3_2026 --mode dry-run   # plan + cost only
@@ -159,10 +162,6 @@ python -m content_hub.cli social generate Q3_2026 --mode live      # spends; edi
 # 3. Review page from the live sheet, published beside the calendar on Drive:
 python -m content_hub.cli social preview Q3_2026
 
-# 4. Pull the live sheet down for Cowork, or freeze a versioned snapshot:
-python -m content_hub.cli social download Q3_2026 --out ./work   # -> ./work/Ghedee_Social_Calendar_Q3_2026.xlsx
-python -m content_hub.cli social snapshot Q3_2026               # -> next _v<N>.xlsx on Drive
-
 # generate options: --only image|video   --video-model <id>   --video-duration 30
 ```
 
@@ -171,6 +170,30 @@ machine-owned columns (Generated Asset Link / Est. Cost / AI Model / Notes) **in
 place** via the Sheets API — so a teammate editing captions or Status at the same
 time is never clobbered. `dry-run` touches nothing; `mock` writes a local
 `*.mock.xlsx` instead of the live sheet.
+
+## Editing the live sheet directly
+
+All calendar changes go straight to the **living Google Sheet** — there is no local
+`.xlsx` to download, edit, and re-upload. Two tools edit it in place over the same Sheets
+API `generate` uses, so only the cells named are touched (concurrent human edits survive):
+
+- **`social_edit_calendar`** — change cells of existing rows. Each edit names a row by
+  its **Row ID** and a column by header name (or a known alias, e.g. `Hook` → Headline):
+  `{"row_id": "IG-014", "column": "Caption", "value": "New copy…"}`. The batch is
+  validated as a whole — if any edit is invalid, **nothing** is written and the errors
+  come back, so the sheet is never left half-edited.
+- **`social_add_rows`** — append new rows in bulk to seed a calendar. Each row is a
+  `{header: value}` dict and must carry a Row ID; rows land after the last used row.
+
+Both take `mode` = `dry-run` (preview the resolved writes, touch nothing) or `live`
+(write). There's no `mock` here — nothing is generated or spent, so `dry-run` already is
+the safe rehearsal. **Guardrails** (why this is a schema-aware tool, not a raw Sheets
+connector): **Status is never editable** — approval is a human-only decision; new rows
+default to `Draft` and an approval status can't be set. The **machine-owned columns**
+(Generated Asset Link / Est. Cost / AI Model) are written by `generate` — `edit` refuses
+them unless `force=true`, `add` refuses them outright. Constrained columns (Platform /
+Format / Visual Type) are validated against their allowed values, and an unknown column
+or Row ID is rejected with a clear message.
 
 ## Run as an MCP server
 

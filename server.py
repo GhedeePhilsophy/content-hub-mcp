@@ -68,13 +68,12 @@ def social_generate_media(calendar_id: str, mode: str = "dry-run",
 
 
 @mcp.tool()
-def social_create_calendar(calendar_id: str, dest_dir: str,
-                           replace: bool = False) -> dict:
+def social_create_calendar(calendar_id: str, replace: bool = False) -> dict:
     """Initialise a brand-new Social Calendar (call this to START a new calendar). Creates
     the Google Drive folder tree (the calendar folder + 00_Calendar & Docs, 02_AI Visuals/
-    Images + /Video, 03_Carousels), creates the LIVING Google Sheet as an empty, styled
-    header-only shell in 00_Calendar & Docs, and writes a local shell .xlsx
-    (Ghedee_Social_Calendar_<id>_v1.xlsx) into dest_dir for Cowork to fill in.
+    Images + /Video, 03_Carousels) and creates the LIVING Google Sheet as an empty, styled
+    header-only shell in 00_Calendar & Docs. Cowork then fills it in directly with
+    social_add_rows — there is no local file to hand back.
 
     calendar_id may be a quarter (e.g. 'Q3_2026'), a date range, or a single day — it is NOT
     required to be a quarter. Whatever it is, it becomes the Drive folder name verbatim.
@@ -82,34 +81,12 @@ def social_create_calendar(calendar_id: str, dest_dir: str,
     Args:
         calendar_id: the new calendar's id (a quarter, a date range, or a single day); this
             is used verbatim as the Drive folder name.
-        dest_dir: REQUIRED — the absolute path to your (Cowork's) working directory where the
-            shell .xlsx should be written. The server can't reach into your sandbox, so pass
-            the folder you want the file in.
         replace: recreate an empty shell even if a live sheet already exists (trashes the old).
 
-    Returns the folder name, the living sheet name/id/link, and the local shell .xlsx path.
+    Returns the folder name and the living sheet name/id/link.
     """
     from content_hub.social import sheet_ops
-    return sheet_ops.create(calendar_id, dest_dir, replace=replace, emit=_emit)
-
-
-@mcp.tool()
-def social_upload_calendar(calendar_id: str, source_path: str,
-                           replace: bool = False) -> dict:
-    """Create the LIVING Google Sheet (Ghedee_Social_Calendar_<id>) in 00_Calendar & Docs
-    from a local .xlsx at source_path. The living sheet is the canonical calendar the team
-    edits in place. Fails if it already exists unless replace=True (which trashes the old
-    one and recreates it from this .xlsx).
-
-    Args:
-        calendar_id: e.g. 'Q3_2026'.
-        source_path: REQUIRED — the absolute path to the .xlsx to upload (in your/Cowork's
-            working directory). The local filename can be anything; the living sheet is
-            always named Ghedee_Social_Calendar_<id>.
-        replace: overwrite an existing live sheet from this .xlsx.
-    """
-    from content_hub.social import sheet_ops
-    return sheet_ops.upload(calendar_id, source_path, replace=replace, emit=_emit)
+    return sheet_ops.create(calendar_id, replace=replace, emit=_emit)
 
 
 @mcp.tool()
@@ -137,28 +114,62 @@ def social_build_preview(calendar_id: str, version: int | None = None,
 
 
 @mcp.tool()
-def social_snapshot_calendar(calendar_id: str) -> dict:
-    """Export the living Google Sheet to the next versioned .xlsx snapshot
-    (Ghedee_Social_Calendar_<id>_v<N>.xlsx) in 00_Calendar & Docs — a frozen
-    approval-round record. Returns the new version, filename, and Drive link.
-    """
-    from content_hub.social import sheet_ops
-    return sheet_ops.snapshot(calendar_id, emit=_emit)
+def social_edit_calendar(calendar_id: str, edits: list[dict], mode: str = "live",
+                         force: bool = False) -> dict:
+    """Edit cells of EXISTING rows in the LIVING Google Sheet in place — the direct
+    alternative to download → modify → upload. Each edit names a row by its Row ID and a
+    column by header name (or a known alias); only the named cells are written, so a
+    teammate editing other cells at the same time is never clobbered.
 
+    The whole batch is validated first: if ANY edit is invalid, NOTHING is written and the
+    errors are returned (no half-applied edits).
 
-@mcp.tool()
-def social_download_calendar(calendar_id: str, dest_dir: str) -> dict:
-    """Export the living Google Sheet to a local .xlsx (Ghedee_Social_Calendar_<id>.xlsx)
-    in dest_dir, so Cowork can ingest the current edits and notes.
+    GUARDRAILS: 'Status' is NOT editable — approval is a human-only decision made in the
+    sheet. The machine-owned columns (Generated Asset Link / Est. Cost / AI Model) are
+    written by generate and are refused unless force=True. Platform / Format / Visual Type
+    values are validated against their allowed dropdown values.
 
     Args:
         calendar_id: e.g. 'Q3_2026'.
-        dest_dir: REQUIRED — the absolute path to your (Cowork's) working directory where the
-            .xlsx should be written. The server can't reach into your sandbox, so pass the
-            folder you want the file in.
+        edits: a list of {"row_id": "IG-014", "column": "Caption", "value": "New copy…"}.
+            'column' accepts the header text or an alias (e.g. 'Headline' or 'Hook');
+            'value' is written as USER_ENTERED (a URL becomes a link, a number stays numeric).
+        mode: 'dry-run' previews the resolved cell writes without touching the sheet;
+            'live' writes them. (No 'mock' — nothing is generated or spent, so dry-run is
+            already the safe preview.)
+        force: allow overwriting the machine-owned columns (default False).
+
+    Returns the planned/written changes and any validation errors.
     """
-    from content_hub.social import sheet_ops
-    return sheet_ops.download(calendar_id, dest_dir, emit=_emit)
+    from content_hub.social import edit_ops
+    return edit_ops.edit_rows(calendar_id, edits, mode=mode, force=force, emit=_emit)
+
+
+@mcp.tool()
+def social_add_rows(calendar_id: str, rows: list[dict], mode: str = "live") -> dict:
+    """Append NEW rows to the LIVING Google Sheet in bulk — used to seed a fresh calendar
+    (or add posts later) without the download/upload round-trip. Each row is a dict of
+    column->value keyed by header name or alias, and MUST include a Row ID (the stable key);
+    a Row ID already in the sheet, or repeated within the batch, is rejected. The batch is
+    validated as a whole: if any row is invalid, nothing is written.
+
+    GUARDRAILS: new rows default to Status='Draft' (so generate will pick them up); an
+    explicit Status may only be a working state (Draft / Awaiting Asset) — an approval state
+    is refused. The machine-owned columns (Generated Asset Link / Est. Cost / AI Model) are
+    filled by generate and can't be set here. Platform / Format / Visual Type are validated.
+
+    Args:
+        calendar_id: e.g. 'Q3_2026'.
+        rows: a list of row dicts, e.g.
+            {"Row ID": "IG-001", "Date": "2026-08-01", "Platform": "Instagram",
+             "Format": "Reel", "Headline": "…", "Caption": "…", "Visual Type": "AI text-to-video",
+             "Prompt": "…"}.
+        mode: 'dry-run' previews the rows without writing; 'live' appends them.
+
+    Returns the planned/appended rows and any validation errors.
+    """
+    from content_hub.social import edit_ops
+    return edit_ops.add_rows(calendar_id, rows, mode=mode, emit=_emit)
 
 
 if __name__ == "__main__":
