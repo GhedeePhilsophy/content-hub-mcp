@@ -31,10 +31,10 @@ FAILED_TEXT = "Failed"  # written into the asset-link cell when a row can't be p
 
 
 def _uses_selected(job) -> bool:
-    """True when this row should be filled from its Selected Asset Link instead of
-    generating. Applies to single-image and single-video rows; a lone link can't
-    populate a multi-slide carousel, so carousels always generate."""
-    return bool(job.selected_link) and job.plan.kind in ("image", "video")
+    """True when this row is filled from its Created Asset Link instead of generating:
+    a single-image/video row copies the one linked file, and a carousel row copies the
+    images from the linked FOLDER (alphabetical order -> slide order)."""
+    return bool(job.selected_link) and job.plan.kind in ("image", "video", "carousel")
 
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -110,6 +110,54 @@ def _use_selected_asset(drive, job, out_dir: Path, emit) -> dict:
                 emit(f"  FAILED -> {asset.get('id')}: selected asset unavailable ({short})",
                      err=True)
     return receipt
+
+
+def _carousel_images(drive, folder_id: str) -> list[dict]:
+    """The image files directly in a Drive folder (id/name/md5), sorted alphabetically."""
+    return sorted(
+        (c for c in drive.list_children(folder_id)
+         if c.get("mimeType") != FOLDER_MIME and c["name"].lower().endswith(_IMAGE_EXTS)),
+        key=lambda c: c["name"].lower())
+
+
+def _copy_selected_carousel(drive, parent: str, job, out_dir: Path, emit):
+    """Fill a carousel's slides from the folder in its Created Asset Link: the folder's
+    image files in ALPHABETICAL order become slide 1..N, and N must equal the Slides column.
+    Both the SOURCE folder and the existing DESTINATION folder must hold exactly N images
+    (a stale destination from a different slide count is an error). Each slide's Drive file
+    is (re)uploaded only when the source content differs (MD5), so a re-run touches nothing
+    when the folder is unchanged. Returns (group_folder_link, updated, skipped); raises on a
+    fatal error (unparseable link / count mismatch) so the caller marks the row Failed."""
+    fid = file_id_from_link((job.selected_link or "").strip())
+    if not fid:
+        raise ValueError(
+            f"could not parse a Drive folder id from Created Asset Link: {job.selected_link}")
+    imgs = _carousel_images(drive, fid)
+    n = len(job.assets)  # == the Slides column (validated when the job was built)
+    if len(imgs) != n:
+        raise ValueError(
+            f"Created Asset Link folder has {len(imgs)} image(s) but Slides says {n} — "
+            "they must match")
+    dest = drive.ensure_path(parent, [job.group])
+    dest_by_name = {c["name"]: c for c in _carousel_images(drive, dest)}
+    if dest_by_name and len(dest_by_name) != n:
+        raise ValueError(
+            f"destination carousel folder has {len(dest_by_name)} slide image(s) but Slides "
+            f"says {n} — remove the stale slide files, then re-run")
+    updated = skipped = 0
+    for asset, src in zip(job.assets, imgs):
+        name = f"{asset['id']}_v1.png"
+        cur = dest_by_name.get(name)
+        if cur and src.get("md5Checksum") and cur.get("md5Checksum") == src["md5Checksum"]:
+            skipped += 1
+            continue
+        local = media.asset_target_dir(out_dir, asset) / name
+        local.parent.mkdir(parents=True, exist_ok=True)
+        drive.download_file(src["id"], local)
+        drive.make_shareable(drive.upload(local, dest)["id"])
+        updated += 1
+        emit(f"  select -> {job.group}/{name}  (copied from Created Asset Link folder)")
+    return drive.make_shareable(dest), updated, skipped
 
 
 def _stderr_emit(msg: str, *, err: bool = False) -> None:
@@ -366,6 +414,32 @@ def generate_media(calendar_id: str, mode: str = "dry-run", *,
     hints: set[str] = set()
     for job in in_scope:
         parent = _kind_parent(drive, base_folder, job)
+
+        # Carousel filled from a Created Asset Link folder: map its images to the slides and
+        # (re)upload only the slides whose source changed. Handles its own idempotency.
+        if _uses_selected(job) and job.plan.kind == "carousel":
+            try:
+                link, updated, skipped = _copy_selected_carousel(drive, parent, job, out_dir, emit)
+            except Exception as e:
+                short, hint = media.friendly_error(e)
+                if hint:
+                    hints.add(hint)
+                result["failed"] += 1
+                writer.write_result(job.row_index, link=FAILED_TEXT, overwrite=overwrite)
+                writer.write_note(job.row_index, f"selected carousel failed: {short}")
+                result["rows"].append({"row_id": job.row_id, "kind": "carousel",
+                                       "action": "failed", "error": short})
+                continue
+            action = "generated" if updated else "skipped-existing"
+            result["generated" if updated else "skipped_existing"] += 1
+            writer.write_result(job.row_index, link=link, cost=0.0, overwrite=overwrite,
+                                model="selected-asset")
+            writer.write_note(job.row_index, "")
+            result["rows"].append({"row_id": job.row_id, "kind": "carousel", "action": action,
+                                   "link": link, "cost_usd": 0.0,
+                                   "slides_updated": updated, "slides_skipped": skipped})
+            continue
+
         existing = _already_on_drive(drive, parent, job)
         # A Selected-Asset row is only "already done" if the on-Drive copy still matches
         # the Selected Asset Link; if the link now points at a different file, re-copy.
