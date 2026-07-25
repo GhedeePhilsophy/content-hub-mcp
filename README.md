@@ -15,8 +15,10 @@ in place. The tools:
 | `social_edit_calendar` | Edit cells of **existing** rows in the live sheet in place. Edits name a row by **Row ID** and a column by header name; only the named cells are written. Status is not editable (human-only approval); the machine-owned columns are `force`-gated. |
 | `social_generate_media` | Read the live sheet's Draft rows → generate the missing AI images/videos → upload to Drive → write each link / cost / model / notes back **into the live sheet in place** (Sheets API). |
 | `social_build_preview` | Build an HTML review page from the live sheet and publish it next to the calendar as `Ghedee_Social_Calendar_<id>_preview.html`. |
+| `social_export_calendar` | Write a scheduler's bulk-import file from the live sheet — **Metricool** or **Publer** CSV. Exports finished rows only, resolves each Drive asset to a fetchable URL, and expands carousels into their slides. |
 
-Metricool publishing is planned for a later phase.
+Direct Metricool *publishing* (via their API) is planned for a later phase; today the
+handoff is the export file above.
 
 ## Architecture
 
@@ -36,6 +38,10 @@ content_hub/
     rules.py              calendar naming, id→folder, aspect-ratio, Drive layout
     calendar.py           read the .xlsx → jobs; write Drive link + cost back
     workflow.py           orchestrator: generate → push → writeback (the 3 operations)
+    exporters/            bulk-import files for external schedulers
+      __init__.py         sheet → neutral Post objects + the Drive media-URL rule
+      metricool.py        Metricool's CSV (one file, per-platform boolean columns)
+      publer.py           Publer's CSV (one file PER platform; Drive share links)
   cli.py                  manual dry/mock/live test harness for the same 3 operations
 ```
 
@@ -162,6 +168,10 @@ python -m content_hub.cli social generate Q3_2026 --mode live      # spends; edi
 # 3. Review page from the live sheet, published beside the calendar on Drive:
 python -m content_hub.cli social preview Q3_2026
 
+# 4. Hand the approved round to a scheduler as a bulk-import file:
+python -m content_hub.cli social export Q3_2026 --target metricool
+python -m content_hub.cli social export Q3_2026 --target publer     # one file per platform
+
 # generate options: --only image|video   --video-model <id>   --video-duration 30
 ```
 
@@ -194,6 +204,60 @@ default to `Draft` and an approval status can't be set. The **machine-owned colu
 them unless `force=true`, `add` refuses them outright. Constrained columns (Platform /
 Format / Visual Type) are validated against their allowed values, and an unknown column
 or Row ID is rejected with a clear message.
+
+## Exporting to a scheduler
+
+`social export` turns the finished part of the calendar into a scheduler's bulk-import
+file. Two targets exist — **Metricool** and **Publer** (`--target`, default `metricool`).
+`content_hub/social/exporters/` is a registry, so a new one is a module exposing `NAME`,
+`EXTENSION` and `write(posts, out, **opts)` — it receives fully-resolved `Post` objects
+and never touches Drive or the sheet.
+
+```bash
+python -m content_hub.cli social export Q3_2026                         # metricool, Approved, drafts
+python -m content_hub.cli social export Q3_2026 --target publer         # Publer, per-platform files
+python -m content_hub.cli social export Q3_2026 --statuses Approved,Draft
+python -m content_hub.cli social export Q3_2026 --schedule              # live scheduled posts
+```
+
+Only rows whose Status says they're finished are exported (**Approved** by default —
+`--statuses` to widen). Posts are written as scheduler **drafts** unless `--schedule`,
+so an import can never auto-publish before someone confirms the media resolved. A row
+with no asset, or a carousel whose Drive folder disagrees with its `Slides` count, is
+**skipped and reported** rather than exported broken.
+
+Times are exported verbatim from `Time (PT)`, so the destination account's timezone must
+be Pacific or the whole calendar lands hours off.
+
+### The Drive media-URL rule
+
+The export is only as good as the URL it hands over, and the right form **depends on the
+scheduler** — specifically whether it *fetches* the URL for bytes or *parses* it as a
+Drive share link and resolves the file through its own Google integration. The forms, and
+what each returns to an anonymous fetcher (all measured):
+
+| URL form (`link_style`) | Behaviour |
+|---|---|
+| `…/file/d/<id>/view?usp=sharing` (`share`) | `text/html` viewer page to a fetcher — **useless if fetched**, but the canonical share link a Drive *integration* wants. **Publer** uses this. |
+| `drive.usercontent.google.com/download?id=<id>&export=download` (`download`) | **200 with the true content-type**, images and video alike — the answer for anything that fetches bytes. |
+| `drive.google.com/uc?export=download&id=<id>` (`uc`) | **303 with an empty body**; a fetcher that doesn't follow redirects sees nothing. |
+| `lh3.googleusercontent.com/d/<id>` (`lh3`) | 200 — but for a **video** it serves a poster JPEG, so the post silently publishes as a still. Avoid where video is possible. |
+
+Each target sets its own default (`LINK_STYLE`); override with `--link-style`. Whichever
+form is used, the assets must be **link-shared** ("Anyone with the link") or nothing
+resolves — the exporter never changes Drive permissions, that's a human decision — and if
+sharing is later tightened, every already-scheduled post loses its media.
+
+### Publer specifics
+
+Publer's CSV has **no platform column**: an import applies every row to the *same*
+accounts picked in the import wizard. Because the calendar carries different copy per
+platform, `social export --target publer` writes **one file per platform**
+(`…_publer_instagram.csv`, `…_publer_facebook.csv`, …) — import each against the matching
+account. Media go in a single comma-separated column (carousels expand there), alt text
+uses `||`, and the IG first-comment hashtags map to Publer's `Comment(s)` column (Facebook
+files omit them). Publer has no draft flag in the file — drafts-vs-scheduled is chosen in
+the wizard — so `--schedule` only affects the summary for this target.
 
 ## Run as an MCP server
 

@@ -114,6 +114,45 @@ def social_build_preview(calendar_id: str, version: int | None = None,
 
 
 @mcp.tool()
+def social_export_calendar(calendar_id: str, target: str = "metricool",
+                           statuses: list[str] | None = None,
+                           schedule: bool = False, out_path: str | None = None,
+                           link_style: str | None = None) -> dict:
+    """Write a scheduler's bulk-import file from the LIVING Google Sheet — currently
+    Metricool's CSV. Exports only rows whose Status says they're finished (Approved by
+    default), resolving each row's Drive asset into a URL the scheduler can actually
+    fetch and expanding a carousel's Drive folder into its slides in order. A row with
+    no asset, or a carousel whose folder disagrees with its Slides count, is skipped and
+    reported in warnings rather than exported broken.
+
+    Posts are written as scheduler DRAFTS unless schedule=True, so an import can never
+    auto-publish before a human confirms the media previews resolve.
+
+    The exported media URLs only work while the Drive files stay link-shared; this tool
+    never changes Drive permissions. Times are exported exactly as authored in
+    Time (PT) — the destination account's timezone must be Pacific.
+
+    Args:
+        calendar_id: e.g. 'Q3_2026'.
+        target: which scheduler to write for (default 'metricool').
+        statuses: statuses to export (default ['Approved']); add 'Draft' to include
+            rows Wiah has not approved.
+        schedule: import as live scheduled posts instead of drafts (default False).
+        out_path: override the output path.
+        link_style: Drive URL form for the media columns — 'share' (canonical share
+            link), 'download' (direct bytes), 'lh3' (CDN; serves a poster JPEG for
+            video, so avoid). Defaults to the target's own.
+
+    Returns the output path, counts by platform and media kind, and any skip warnings.
+    """
+    from content_hub.social import exporters
+    return exporters.export(
+        calendar_id, target=target, out_path=out_path,
+        statuses=tuple(statuses) if statuses else exporters.DEFAULT_STATUSES,
+        schedule=schedule, link_style=link_style)
+
+
+@mcp.tool()
 def social_edit_calendar(calendar_id: str, edits: list[dict], mode: str = "live",
                          force: bool = False) -> dict:
     """Edit cells of EXISTING rows in the LIVING Google Sheet in place — the direct

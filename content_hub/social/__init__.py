@@ -6,6 +6,7 @@
   sheet_ops  create the living Google Sheet
   edit_ops   direct in-place cell edits + bulk row appends to the living sheet
   preview    the HTML review page
+  exporters  bulk-import files for external schedulers (metricool, …)
 
 Operations are re-exported here so callers can use
 `from content_hub.social import generate_media` etc.
@@ -14,7 +15,9 @@ Operations are re-exported here so callers can use
 from .workflow import generate_media
 from .sheet_ops import create
 from .edit_ops import edit_rows, add_rows
+from .exporters import export as export_calendar
 
 __all__ = ["generate_media", "create",
-           "edit_rows", "add_rows",
-           "rules", "calendar", "workflow", "sheet_ops", "edit_ops", "preview"]
+           "edit_rows", "add_rows", "export_calendar",
+           "rules", "calendar", "workflow", "sheet_ops", "edit_ops", "preview",
+           "exporters"]

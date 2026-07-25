@@ -14,6 +14,7 @@ blog and email register the same way later.
   python -m content_hub.cli social generate Q3_2026 --mode dry-run
   python -m content_hub.cli social generate Q3_2026 --mode mock
   python -m content_hub.cli social generate Q3_2026 --mode live
+  python -m content_hub.cli social export   Q3_2026 --target metricool
 
 Everything lives on the LIVING Google Sheet — there is no local .xlsx round-trip.
 
@@ -32,7 +33,7 @@ import sys
 
 from .core import config
 from . import social
-from .social import preview, sheet_ops
+from .social import exporters, preview, sheet_ops
 
 
 def _print_result(res: dict) -> None:
@@ -122,6 +123,30 @@ def _register_social(workflows) -> None:
     p2.set_defaults(func=lambda a: preview.build_preview(
         a.calendar_id, a.version, out_path=a.out,
         no_cache=a.no_cache, publish=not a.no_publish))
+
+    x = ops.add_parser("export", help="Write a scheduler's bulk-import file "
+                                      "(e.g. a Metricool CSV) from the live sheet.")
+    x.add_argument("calendar_id")
+    x.add_argument("--target", choices=sorted(exporters.TARGETS),
+                   default="metricool", help="Which scheduler to write for.")
+    x.add_argument("--out", help="Output path (default: generated/<id>/"
+                                 "Ghedee_Social_Calendar_<id>_<target>.csv).")
+    x.add_argument("--statuses", default=",".join(exporters.DEFAULT_STATUSES),
+                   help="Comma-separated statuses to export (default: Approved). "
+                        "Add Draft to include unapproved rows.")
+    x.add_argument("--schedule", action="store_true",
+                   help="Import as live scheduled posts. Default is to import as "
+                        "DRAFTS so nothing can auto-publish.")
+    x.add_argument("--template", help="Override the target's built-in column header "
+                                      "with a CSV whose first row is the header.")
+    x.add_argument("--link-style", choices=sorted(exporters.LINK_STYLES), default=None,
+                   help="Drive URL form for the media columns (default: the target's "
+                        "own). share=canonical share link, download=direct bytes, "
+                        "lh3=CDN (serves a poster JPEG for video — avoid).")
+    x.set_defaults(func=lambda a: exporters.export(
+        a.calendar_id, target=a.target, out_path=a.out,
+        statuses=tuple(s.strip() for s in a.statuses.split(",") if s.strip()),
+        schedule=a.schedule, template=a.template, link_style=a.link_style))
 
 
 def main(argv: list[str] | None = None) -> int:
