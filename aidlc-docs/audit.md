@@ -85,6 +85,14 @@ Append-only. Captures every user input (raw) and AI action with ISO-8601 timesta
 
 ---
 
+## Follow-up increment — Tier 1+2 checks + split Audit columns
+**Timestamp**: 2026-07-25T03:30:00Z
+**User Input**: "Add Tier 1 and Tier 2. Split the Audit Results into 2 columns: 1) Audit Status - Selectable from enum PASS/WARN/FAIL 2) Audit Note: messages for non-PASS. FAIL beats WARN. Status cell background: green PASS / yellow WARN / red FAIL."
+**AI Response**: Wrote followup-tier12-plan.md. specs.py: added video duration bounds (min/max seconds) per platform×type. drive.py: is_link_shared. core/sheets.py: sheet_meta + apply_requests (formatting batchUpdate). audit.py: added video-duration, row-readiness (Approved-but-not-ready), link-sharing, caption-links (IG/TikTok), IG hashtag-placement, carousel Slides-vs-folder + intra-carousel ratio consistency, duplicate-hashtag, duplicate-asset(md5) checks; verdict worst-wins (FAIL>WARN); two-column write-back with _ensure_audit_columns (migrates legacy 'Audit Results' → 'Audit Status', appends 'Audit Note', installs PASS/WARN/FAIL dropdown + green/yellow/red conditional formatting, idempotent). calendar.py: shell split into Audit Status + Audit Note, dropdown + add_audit_conditional_formatting, AUDIT_STATUS_VALUES/FILLS. tests: 45 pass. Validated dry-run on live Q3_2026 (55 pass / 65 warn — verified the 65 are real duplicate/repeated hashtags, e.g. #PhilosophyOfLiving listed twice). Mock running; live pending user go (schema migration + coloured write-back).
+**Context**: CONSTRUCTION — follow-up Code Generation
+
+---
+
 ## Remove legacy write-back alias
 **Timestamp**: 2026-07-25T02:32:00Z
 **User Input**: "Remove the \"revision (claude)\" backwards compatibility"

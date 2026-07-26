@@ -101,9 +101,11 @@ _HEADER_ALIASES = {
                        "selected asset link", "selected asset"},
     "status": {"status"},
     "notes": {"your notes", "notes"},
-    # Machine-written audit findings (the post audit owns this column, like generate owns
-    # the asset/cost cells). Human-readable, non-approval, safe to overwrite each run.
-    "audit_results": {"audit results"},
+    # Machine-written audit findings (the post audit owns these, like generate owns the
+    # asset/cost cells). Audit Status is PASS/WARN/FAIL (colour-coded, dropdown); Audit Note
+    # carries the reasons. Non-approval, safe to overwrite each run.
+    "audit_status": {"audit status"},
+    "audit_note": {"audit note"},
     "slides": {"slides", "slide count", "# slides"},
     "carousel_group": {"carousel group", "group"},
 }
@@ -121,10 +123,10 @@ SHELL_HEADERS = [
     "Platform", "Format", "Slides", "Headline", "Caption",
     "First-comment Hashtags (IG)", "Visual Type", "Visual Direction", "Prompt",
     "AI Model", "Est. Cost (USD)", "Generated Asset Link", "Created Asset Link",
-    "Your Notes", "Audit Results",
+    "Your Notes", "Audit Status", "Audit Note",
 ]
 SHELL_COL_WIDTHS = [13, 14, 6, 10, 26, 14, 16, 22, 28, 10, 30, 18, 50, 26, 26, 40, 16,
-                    30, 13, 13, 13, 13]
+                    30, 13, 13, 13, 12, 44]
 FROZEN_COLUMNS = 2  # Status + Row ID stay put when scrolling horizontally
 
 # Constrained columns -> their allowed values (rendered as dropdowns in the shell so a
@@ -133,6 +135,7 @@ FROZEN_COLUMNS = 2  # Status + Row ID stay put when scrolling horizontally
 PLATFORM_VALUES = ["Instagram", "Facebook", "Tiktok"]
 FORMAT_VALUES = ["Post", "Reel", "Carousel"]
 STATUS_VALUES = ["Draft", "Awaiting Asset", "Wiah Review", "Approved"]
+AUDIT_STATUS_VALUES = ["PASS", "WARN", "FAIL"]  # written by the audit; a dropdown in the shell
 HEADER_FILL = "FF1B3A2D"          # deep forest green (opaque ARGB)
 HEADER_FONT_COLOR = "FFF7F2E8"    # ivory
 HEADER_BORDER_COLOR = "FF7B9E87"  # sage
@@ -148,6 +151,11 @@ STATUS_FILLS = {
     "Wiah Review": "E0D2F7",     # purple
 }
 STATUS_OTHER_FILL = "F7C7C2"     # any other non-blank status -> red
+
+# Audit Status -> cell fill (PASS green / WARN yellow / FAIL red). Kept in sync with the
+# Sheets-API colours in social/audit.py (_CF_COLORS) so a new calendar and the living sheet
+# colour the column identically.
+AUDIT_STATUS_FILLS = {"PASS": "BCE8C8", "WARN": "FDECB0", "FAIL": "F7C7C2"}
 
 
 def add_status_conditional_formatting(ws, headers=SHELL_HEADERS, last_row: int = 1000):
@@ -170,6 +178,22 @@ def add_status_conditional_formatting(ws, headers=SHELL_HEADERS, last_row: int =
         fill=PatternFill("solid", fgColor=STATUS_OTHER_FILL)))
 
 
+def add_audit_conditional_formatting(ws, headers=SHELL_HEADERS, last_row: int = 1000):
+    """Colour the Audit Status column by value (PASS green / WARN yellow / FAIL red), so a
+    new calendar matches the colour rules the audit installs on the living sheet."""
+    if "Audit Status" not in headers:
+        return
+    from openpyxl.formatting.rule import CellIsRule
+    from openpyxl.styles import PatternFill
+    from openpyxl.utils import get_column_letter
+    col = get_column_letter(headers.index("Audit Status") + 1)
+    rng = f"{col}2:{col}{last_row}"
+    for val, rgb in AUDIT_STATUS_FILLS.items():
+        ws.conditional_formatting.add(rng, CellIsRule(
+            operator="equal", formula=[f'"{val}"'],
+            fill=PatternFill("solid", fgColor=rgb)))
+
+
 def add_dropdowns(ws, headers=SHELL_HEADERS, last_row: int = 1000):
     """Data-validation dropdowns for the constrained columns (Platform, Format, Visual
     Type, Status), so a new calendar enforces the allowed values. Google Sheets imports
@@ -181,6 +205,7 @@ def add_dropdowns(ws, headers=SHELL_HEADERS, last_row: int = 1000):
         "Format": FORMAT_VALUES,
         "Visual Type": [rules.VT_IMAGE, rules.VT_VIDEO, rules.VT_CAROUSEL, rules.VT_RECORDED],
         "Status": STATUS_VALUES,
+        "Audit Status": AUDIT_STATUS_VALUES,
     }
     for header, values in choices.items():
         if header not in headers:
@@ -217,6 +242,7 @@ def build_shell_workbook(tab_title: str = DEFAULT_TAB_TITLE):
     # Freeze the header row and the first FROZEN_COLUMNS columns (cell = first scrollable).
     ws.freeze_panes = f"{get_column_letter(FROZEN_COLUMNS + 1)}2"
     add_status_conditional_formatting(ws)
+    add_audit_conditional_formatting(ws)
     add_dropdowns(ws)
     return wb
 

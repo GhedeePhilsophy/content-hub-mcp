@@ -47,3 +47,33 @@ class SheetsClient:
         return self.svc.spreadsheets().values().batchUpdate(
             spreadsheetId=spreadsheet_id,
             body={"valueInputOption": "USER_ENTERED", "data": data}).execute()
+
+    def sheet_meta(self, spreadsheet_id: str, title_contains: str = "calendar") -> dict:
+        """The target tab's grid metadata: {sheetId, title, columnCount}. Needed for the
+        formatting API (dropdowns / conditional formatting address cells by sheetId +
+        GridRange, not A1). Also reports whether the Audit Status column already carries
+        conditional-format rules, so re-installing them is idempotent."""
+        meta = self.svc.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title,gridProperties),conditionalFormats(ranges))"
+        ).execute()
+        sheets = meta.get("sheets", [])
+        s = next((x for x in sheets if title_contains in x["properties"]["title"].lower()),
+                 sheets[0])
+        props = s["properties"]
+        return {
+            "sheetId": props["sheetId"],
+            "title": props["title"],
+            "columnCount": props.get("gridProperties", {}).get("columnCount", 26),
+            "cf_columns": {r["startColumnIndex"]
+                           for cf in s.get("conditionalFormats", [])
+                           for r in cf.get("ranges", []) if "startColumnIndex" in r},
+        }
+
+    def apply_requests(self, spreadsheet_id: str, requests: list[dict]) -> dict:
+        """Run a formatting/structure batchUpdate (dropdowns, conditional formatting,
+        column headers). ``requests`` is the raw Sheets API request list."""
+        if not requests:
+            return {}
+        return self.svc.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()

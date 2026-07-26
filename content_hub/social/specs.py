@@ -57,6 +57,10 @@ class MediaSpec:
     max_file_mb: float
     carousel_min_slides: int | None = None
     carousel_max_slides: int | None = None
+    # Video length bounds (seconds); None for stills. Over max -> FAIL (won't post as this
+    # type); under min -> WARN (short but postable).
+    min_seconds: float | None = None
+    max_seconds: float | None = None
     note: str = ""
 
 
@@ -78,18 +82,19 @@ SPECS: dict[str, dict[str, MediaSpec]] = {
         IMAGE_POST: MediaSpec("1:1", ("1:1", "4:5", "1.91:1"), 1080, 8),
         # Instagram has NO separate feed video — an uploaded video publishes as a Reel.
         # So a Post+video row is normalized to a 9:16 Reel (see classify()).
-        VIDEO_POST: MediaSpec("9:16", ("9:16",), 1080, 650,
+        VIDEO_POST: MediaSpec("9:16", ("9:16",), 1080, 650, min_seconds=3, max_seconds=90,
                               note="Instagram has no feed video; publishes as a Reel (9:16)."),
-        REEL: MediaSpec("9:16", ("9:16",), 1080, 650),
+        REEL: MediaSpec("9:16", ("9:16",), 1080, 650, min_seconds=3, max_seconds=90),
         # Up to 20 slides; the first slide locks the ratio (4:5 recommended).
         CAROUSEL: MediaSpec("4:5", ("1:1", "4:5"), 1080, 8,
                             carousel_min_slides=2, carousel_max_slides=20),
     },
     "facebook": {
         IMAGE_POST: MediaSpec("1:1", ("1:1", "4:5", "1.91:1"), 1080, 30),
-        # Facebook is the one platform with a genuine landscape feed-video format.
-        VIDEO_POST: MediaSpec("16:9", ("16:9", "4:5", "1:1"), 1080, 4096),
-        REEL: MediaSpec("9:16", ("9:16",), 1080, 1024),
+        # Facebook is the one platform with a genuine landscape feed-video format (up to 240 min).
+        VIDEO_POST: MediaSpec("16:9", ("16:9", "4:5", "1:1"), 1080, 4096,
+                              min_seconds=1, max_seconds=14400),
+        REEL: MediaSpec("9:16", ("9:16",), 1080, 1024, min_seconds=3, max_seconds=90),
         CAROUSEL: MediaSpec("4:5", ("1:1", "4:5"), 1080, 30,
                             carousel_min_slides=2, carousel_max_slides=10),
     },
@@ -98,9 +103,9 @@ SPECS: dict[str, dict[str, MediaSpec]] = {
         # carousels. A lone image is accepted but flagged (see classify()).
         IMAGE_POST: MediaSpec("1:1", ("9:16", "1:1", "4:5"), 1080, 500,
                               note="TikTok has no single-image post; use a Photo Mode carousel."),
-        # All TikTok video is one vertical (9:16) format — there is no 16:9 feed video.
-        VIDEO_POST: MediaSpec("9:16", ("9:16",), 1080, 500),
-        REEL: MediaSpec("9:16", ("9:16",), 1080, 500),
+        # All TikTok video is one vertical (9:16) format — there is no 16:9 feed video. Up to 10 min.
+        VIDEO_POST: MediaSpec("9:16", ("9:16",), 1080, 500, min_seconds=3, max_seconds=600),
+        REEL: MediaSpec("9:16", ("9:16",), 1080, 500, min_seconds=3, max_seconds=600),
         # Photo Mode: 4–35 images, 9:16 best (1:1 / 4:5 also supported), 500 MB total.
         CAROUSEL: MediaSpec("4:5", ("9:16", "1:1", "4:5"), 1080, 500,
                             carousel_min_slides=4, carousel_max_slides=35),
@@ -112,7 +117,7 @@ SPECS: dict[str, dict[str, MediaSpec]] = {
 _GENERIC = {
     IMAGE_POST: MediaSpec("1:1", ("1:1", "4:5", "1.91:1"), 1080, 30),
     VIDEO_POST: MediaSpec("16:9", ("16:9", "9:16", "1:1", "4:5"), 1080, 4096),
-    REEL: MediaSpec("9:16", ("9:16",), 1080, 1024),
+    REEL: MediaSpec("9:16", ("9:16",), 1080, 1024, min_seconds=3, max_seconds=90),
     CAROUSEL: MediaSpec("4:5", ("1:1", "4:5"), 1080, 30,
                         carousel_min_slides=2, carousel_max_slides=20),
 }
