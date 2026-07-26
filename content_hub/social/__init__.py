@@ -16,8 +16,9 @@ from .workflow import generate_media
 from .sheet_ops import create
 from .edit_ops import edit_rows, add_rows
 from .exporters import export as export_calendar
+from .audit import audit_calendar
 
 __all__ = ["generate_media", "create",
-           "edit_rows", "add_rows", "export_calendar",
-           "rules", "calendar", "workflow", "sheet_ops", "edit_ops", "preview",
-           "exporters"]
+           "edit_rows", "add_rows", "export_calendar", "audit_calendar",
+           "rules", "specs", "calendar", "workflow", "sheet_ops", "edit_ops", "preview",
+           "exporters", "audit"]

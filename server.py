@@ -68,6 +68,36 @@ def social_generate_media(calendar_id: str, mode: str = "dry-run",
 
 
 @mcp.tool()
+def social_audit_calendar(calendar_id: str, mode: str = "dry-run",
+                          statuses: list[str] | None = None) -> dict:
+    """Audit the LIVING Google Sheet's posts for compliance with the current per-platform,
+    per-post-type standards (Instagram / Facebook / TikTok × Image Post / Video Post / Reel /
+    Carousel). For each row it classifies the post type, downloads the real Drive asset and
+    measures its ASPECT RATIO, RESOLUTION, and FILE SIZE, and checks the CAPTION length +
+    hashtag count + fold — reporting PASS / WARN / FAIL per check against the canonical
+    standards table (see content_hub/social/specs.py, verified periodically).
+
+    Read-only w.r.t. assets: nothing is generated, moved, deleted, re-permissioned, or billed.
+    Platform/format mismatches (e.g. a 16:9 video aimed at TikTok, a single image on TikTok,
+    an Instagram feed video that will publish as a Reel) are reported as findings, not errors.
+
+    Args:
+        calendar_id: e.g. 'Q3_2026'.
+        mode: 'dry-run' (classify + caption checks only; assets NOT downloaded, sheet
+            untouched), 'mock' (full read-only inspection — downloads + measures — but does
+            NOT write to the sheet), or 'live' (inspect AND write each row's verdict into the
+            'Audit Results' column). No credits are spent in any mode.
+        statuses: optionally restrict to these statuses (e.g. ['Approved'] to check a round
+            before export); omit to audit every row.
+
+    Returns a summary tally (pass/warn/fail/n/a) and per-row findings (resolved post type,
+    measured values, per-check verdicts + reasons, and any platform/format validity notes).
+    """
+    return social.audit_calendar(calendar_id, mode=mode,
+                                 statuses=tuple(statuses) if statuses else None, emit=_emit)
+
+
+@mcp.tool()
 def social_create_calendar(calendar_id: str, replace: bool = False) -> dict:
     """Initialise a brand-new Social Calendar (call this to START a new calendar). Creates
     the Google Drive folder tree (the calendar folder + 00_Calendar & Docs, 02_AI Visuals/

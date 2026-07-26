@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+# AI-DLC Project Rules
+See full development lifecycle guidelines in: ./aws-aidlc-rules/aws-aidlc-rules/core-workflow.md
+
 ## What this is
 
 An MCP server (FastMCP over **stdio**) backing the **Content Hub** Cowork workflows for The Ghedee Centre. Three content types are planned (Blog Posts, Social Calendar, Emails); **only the Social Calendar workflow is built** — everything under `content_hub/social/`.
@@ -23,9 +26,13 @@ python -m content_hub.cli social create Q3_2026
 python -m content_hub.cli social add Q3_2026 @rows.json --mode dry-run
 python -m content_hub.cli social edit Q3_2026 '[{"row_id":"IG-014","column":"Caption","value":"…"}]' --mode live
 python -m content_hub.cli social generate Q3_2026 --mode dry-run    # dry-run | mock | live
+python -m content_hub.cli social audit Q3_2026 --mode mock          # asset+caption compliance audit
 python -m content_hub.cli social preview Q3_2026
 python -m content_hub.cli social export Q3_2026 --target metricool  # or --target publer
 ```
+
+Dev/test deps (property tests for the pure specs/audit logic) are separate:
+`pip install -r requirements-dev.txt && pytest tests/`.
 
 There is **no test suite** and no lint/build config — validate changes by running the CLI harness in `--mode dry-run` (plans + costs, touches nothing) or `--mode mock` (safe rehearsal to a mock Drive destination).
 
@@ -37,6 +44,8 @@ Every operation takes `mode`:
 - **`live`** — the real run: spends credits, writes to Drive + the living sheet.
 
 `social_edit_calendar` / `social_add_rows` have no `mock` (nothing is generated or spent, so `dry-run` is already the safe preview).
+
+`social_audit_calendar` spends **nothing** in any mode (it only reads assets): `dry-run` classifies + checks captions without downloading; `mock` does the full read-only inspection (downloads + measures) but writes nothing; `live` also writes each row's verdict to the **Audit Results** column. The audit only *reports* — it never regenerates, moves, deletes, or re-permissions an asset.
 
 ## Architecture
 
@@ -53,14 +62,20 @@ content_hub/
     google_auth.py       OAuth "as you" (credentials.json → token.json)
     textcard.py          on-image text overlay for carousel slides
   social/                ← workflow #1 (blog/ and email/ would be siblings)
-    rules.py             calendar naming, id→folder, aspect-ratio, Drive layout
+    rules.py             calendar naming, id→folder, Drive layout; plan_visual (aspect via specs)
+    specs.py             canonical per-platform × per-post-type standards (aspect/resolution/
+                         file-size/caption/hashtag caps); single source of truth for BOTH
+                         generation (plan_visual) and the audit — dated + sourced
     calendar.py          read sheet → jobs; write link/cost back
     workflow.py          orchestrator: generate → push → writeback
     sheet_ops.py         create the living sheet shell
     edit_ops.py          in-place cell edits + bulk row appends (schema-aware guardrails)
+    audit.py             compliance audit: measure real assets + captions vs specs; write
+                         per-row verdicts to the Audit Results column (live)
     preview.py           the self-contained HTML review page
     exporters/           scheduler bulk-import files (registry: metricool, publer)
   cli.py                 manual dry/mock/live harness for the same operations
+tests/                   property tests (pytest+hypothesis) for the pure specs/audit logic
 ```
 
 **Adding a workflow** = a new package (e.g. `blog/`) that parses its own input format and defines its own Drive layout, reusing `core.media` + `core.drive` + `core.sheets`. **Adding a scheduler export** = a module in `exporters/` exposing `NAME`, `EXTENSION`, and `write(posts, out, **opts)`; it receives fully-resolved `Post` objects and never touches Drive or the sheet.

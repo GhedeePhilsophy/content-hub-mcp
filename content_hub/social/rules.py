@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import specs
 from ..core.config import REPO_ROOT
 
 
@@ -89,32 +90,43 @@ class VisualPlan:
     #                         Selected Asset into 01_Wiah Videos (kind stays "video")
 
 
-def plan_visual(visual_type: str | None, fmt: str | None) -> VisualPlan:
-    """Resolve a row's Visual Type + Format into what (and how) to generate.
+def plan_visual(visual_type: str | None, fmt: str | None,
+                platform: str | None = None) -> VisualPlan:
+    """Resolve a row's Visual Type + Format (+ Platform) into what (and how) to generate.
 
     Rules (Social Calendar Cowork prompt, MEDIA GENERATION section):
       - AI text-to-carousel (Format 'Carousel') -> 4:5 carousel (multi-slide).
-      - AI text-to-video -> single video; Format 'Reel' is vertical 9:16, else 16:9.
+      - AI text-to-video -> single video; Format 'Reel' is vertical 9:16. A non-Reel
+        'Post' video is 9:16 on Instagram/TikTok (neither has a landscape feed video)
+        and 16:9 on Facebook — the one platform with a native landscape feed video.
       - AI text-to-image  -> 1:1 single image.
       - Recorded video of Wiah -> a video that is never AI-generated: it's copied
         from the Created Asset column into 01_Wiah Videos (kind 'video', recorded).
       - anything else -> skip (not generated here).
 
-    Visual Type is the primary key. The legacy 'AI text-to-image' + Format 'Carousel'
-    combination is still accepted as a carousel for backward compatibility.
+    The target aspect ratio is sourced from ``social.specs`` (the canonical per-platform,
+    per-post-type table), so generation and the audit can never disagree. ``platform`` is
+    optional and defaults to a legacy-preserving generic (non-Reel video -> 16:9) when
+    blank/unrecognized. Visual Type is the primary key; the legacy 'AI text-to-image' +
+    Format 'Carousel' combination is still accepted as a carousel for backward compatibility.
     """
     vt = (visual_type or "").strip()
     f = (fmt or "").strip().lower()
+    is_reel = f == "reel"
     if vt == VT_CAROUSEL or (vt == VT_IMAGE and f == "carousel"):
-        # 4:5 is Instagram's tallest feed/carousel ratio. gpt-image-2 renders it
-        # natively (1024x1280), so no crop is needed.
-        return VisualPlan(kind="carousel", aspect_ratio="4:5", generate=True)
+        # 4:5 is Instagram's tallest feed/carousel ratio (also a valid TikTok Photo Mode
+        # ratio). gpt-image-2 renders it natively (1024x1280), so no crop is needed.
+        return VisualPlan(kind="carousel",
+                          aspect_ratio=specs.target_aspect(platform, "carousel", is_reel),
+                          generate=True)
     if vt == VT_VIDEO:
-        # Reels are vertical short-form (9:16); a Post video is a 16:9 feed clip.
-        return VisualPlan(kind="video", aspect_ratio="9:16" if f == "reel" else "16:9",
+        return VisualPlan(kind="video",
+                          aspect_ratio=specs.target_aspect(platform, "video", is_reel),
                           generate=True)
     if vt == VT_IMAGE:
-        return VisualPlan(kind="image", aspect_ratio="1:1", generate=True)
+        return VisualPlan(kind="image",
+                          aspect_ratio=specs.target_aspect(platform, "image", is_reel),
+                          generate=True)
     if vt == VT_RECORDED:
         # Not AI-generated (generate=False), but a real video asset when a Selected
         # Asset is provided — the calendar reader gates it on that link.
