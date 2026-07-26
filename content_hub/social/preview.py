@@ -284,6 +284,77 @@ def _fmt_day(date_str: str, day: str) -> str:
         return day or date_str
 
 
+# --- simulated engagement --------------------------------------------------
+# Mock like/view counts for the platform simulators. These are INVENTED — the calendar
+# holds no performance data — so the only thing that matters is that they read plausibly
+# and never move: a post showing 84 likes on one build and 231 on the next reads as a bug.
+# Hence FNV-1a rather than hash(), which is salted per process and would differ every run.
+_ENGAGE_LIKES = {           # primary metric band for a still post, per platform
+    "instagram": (38, 260),  # an EMERGING account (the scale chosen at Functional Design);
+    "facebook": (12, 90),    # edit these two tables to re-scale the whole simulator
+    "tiktok": (25, 180),
+}
+_ENGAGE_VIEWS = (800, 14000)  # primary metric band for a Reel / TikTok clip
+
+
+def _fnv1a32(s: str) -> int:
+    """FNV-1a, 32-bit. Stable across processes, versions and platforms (unlike hash())."""
+    h = 0x811C9DC5
+    for b in s.encode("utf-8"):
+        h ^= b
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def _band(row_id: str, metric: str, lo: int, hi: int) -> int:
+    """A stable value in [lo, hi] for one (row, metric) pair. Salting the hash per metric
+    keeps the draws independent, so likes and comments don't move in lockstep."""
+    if hi <= lo:
+        return lo
+    return lo + _fnv1a32(f"{row_id}:{metric}") % (hi - lo + 1)
+
+
+def engagement(row_id: str, platform: str, is_reel: bool = False) -> dict:
+    """Plausible, deterministic mock engagement for one post.
+
+    Pure and total. Secondary metrics are derived FROM the primary draw rather than drawn
+    independently, which is what keeps the numbers coherent: comments can never exceed
+    likes, and likes can never exceed views. An incoherent mockup looks broken.
+    """
+    rid = row_id or ""
+    key = _platform_key(platform)
+    out: dict = {}
+    if is_reel or key == "tiktok":
+        views = _band(rid, "views", *_ENGAGE_VIEWS)
+        likes = max(1, views * _band(rid, "lr", 40, 90) // 1000)      # 4–9% of views
+        out["views"] = views
+    else:
+        likes = _band(rid, "likes", *_ENGAGE_LIKES.get(key, _ENGAGE_LIKES["instagram"]))
+    out["likes"] = likes
+    out["comments"] = likes * _band(rid, "cr", 20, 80) // 1000        # 2–8% of likes
+    out["shares"] = likes * _band(rid, "sr", 10, 40) // 1000          # 1–4%
+    out["saves"] = likes * _band(rid, "vr", 30, 100) // 1000          # 3–10%
+    return out
+
+
+def _rel_time(date_str: str, newest: str) -> str:
+    """"2h" / "3d" / "1w" — this post's age relative to the LATEST post in the calendar, so
+    the top of a simulated feed reads as fresh and older posts age plausibly down it."""
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        n = datetime.strptime(newest, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return ""
+    days = (n - d).days
+    if days <= 0:
+        return f"{2 + _fnv1a32(date_str) % 9}h"   # same day as the newest post
+    if days < 7:
+        return f"{days}d"
+    if days < 35:
+        return f"{days // 7}w"
+    return f"{max(1, days // 30)}mo"
+
+
 SVG = {
     "heart": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg>',
     "comment": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z"/></svg>',
@@ -299,6 +370,14 @@ SVG = {
     "sheet": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>',
     "ext": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg>',
     "reel": '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm6 4v8l6-4-6-4z"/></svg>',
+    # --- simulator chrome ---
+    "phone": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18.5h2"/></svg>',
+    "home": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
+    "search": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+    "add": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="5"/><path d="M12 8v8M8 12h8"/></svg>',
+    "person": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg>',
+    "music": '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="16" r="2.5"/></svg>',
+    "inbox": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h5l2 3h4l2-3h5"/><path d="M5 5h14l2 7v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6z"/></svg>',
 }
 
 
@@ -498,40 +577,19 @@ def _card(job, assets: dict, cache=None, sheet_link: str | None = None) -> str:
         + _status_pill(job.status, job.row_id) + '</div>'
         + (f'<div class="chook">{_esc(job.hook)}</div>' if job.hook else "")
         + actions_html + '</div>')
+    # data-rowid lets the simulator locate this card's media node and CLONE it, so every
+    # asset's data URI is emitted into the page exactly once (see the simulator JS).
     return (f'<article class="card {key} st-{kind}" data-platform="{key}" '
+            f'data-rowid="{_esc(job.row_id)}" '
             f'data-status="{kind}" data-reel="{1 if _is_reel(job) else 0}" '
             f'data-carousel="{1 if _is_carousel(job) else 0}">'
             f'{head}<div class="frame">{body}</div></article>')
 
 
-def _grid_cell(job, assets: dict, cache=None) -> str:
-    """One square tile in the Instagram profile grid."""
-    recorded = job.visual_type.strip().lower().startswith("recorded")
-    failed = isinstance(job.existing_link, str) \
-        and job.existing_link.strip().lower() == "failed" and assets["kind"] == "none"
-    corner = ""
-    if assets["kind"] in ("image", "carousel"):
-        uri = _data_uri(assets["images"][0], 340, cache)
-        inner = f'<img src="{uri}" loading="lazy" alt="{_esc(job.row_id)}">'
-        if assets["kind"] == "carousel":
-            corner = f'<span class="gcorner">{SVG["stack"]}</span>'
-    elif assets["kind"] == "video":
-        poster = _video_poster_uri(assets["video"], 340, cache) if assets.get("video") else None
-        inner = (f'<img src="{poster}" loading="lazy" alt="{_esc(job.row_id)}">'
-                 if poster else f'<div class="gph">{SVG["play"]}</div>')
-        corner = f'<span class="gcorner">{SVG["reel"]}</span>'
-    elif recorded:
-        inner = f'<div class="gph">{SVG["film"]}</div>'
-        corner = f'<span class="gcorner">{SVG["reel"]}</span>'
-    elif failed:
-        inner = f'<div class="gph gph-fail">{SVG["warn"]}</div>'
-    else:
-        inner = '<div class="gph gph-none"></div>'
-    kind = _status_kind(job.status)
-    return (f'<div class="gcell st-{kind}" data-status="{kind}" '
-            f'data-rowid="{_esc(job.row_id)}" '
-            f'title="{_esc(job.row_id)} · {_esc(job.status)} · {_esc(job.hook)}">'
-            f'{inner}{corner}</div>')
+# NOTE: the former `_grid_cell` (the standalone IG Grid's square tile) was removed with the
+# grid view itself. Its replacement — the Instagram simulator's Profile tab — builds each tile
+# in the browser by cloning the review card's <img>, so the page no longer carries a SECOND,
+# 340px encoding of every Instagram asset. That deletion is what pays for the simulators.
 
 
 # --- page assembly ---------------------------------------------------------
@@ -580,14 +638,21 @@ def build_preview(calendar_id: str, version: int | None = None, *,
     scount = {"draft": 0, "ok": 0, "await": 0, "review": 0, "other": 0}
     n_asset = 0
     for j in jobs:
-        key, label = _week_of(j.date)
-        weeks.setdefault(key, []).append(j)
-        labels[key] = label
+        # NB: distinct names — these used to be `key, label`, which clobbered the source
+        # `label` from fetch_calendar, so the page title and the returned "source" field
+        # reported a week heading ("Week of Nov 16") instead of "live" / "v3".
+        wk_key, wk_label = _week_of(j.date)
+        weeks.setdefault(wk_key, []).append(j)
+        labels[wk_key] = wk_label
         counts[_platform_key(j.platform)] = counts.get(_platform_key(j.platform), 0) + 1
         scount[_status_kind(j.status)] += 1
 
+    # newest scheduled date — the simulators' relative timestamps ("2h", "3d") are measured
+    # from it, so the top of a simulated feed always reads as the freshest post.
+    newest = max((j.date for j in jobs if j.date), default="")
+
     sections = []
-    grid_cells = []
+    sim_posts = []
     for wk in sorted(weeks):
         cards = []
         wposts = weeks[wk]
@@ -598,8 +663,22 @@ def build_preview(calendar_id: str, version: int | None = None, *,
             if assets["kind"] in ("image", "carousel"):
                 n_asset += 1
             cards.append(_card(j, assets, cache, sheet_link))
-            if _platform_key(j.platform) == "instagram":
-                grid_cells.append(_grid_cell(j, assets, cache))
+            # Simulator metadata ONLY — no image bytes. The simulator clones each card's
+            # media node at runtime, so assets stay in the file exactly once.
+            pkey = _platform_key(j.platform)
+            link = j.existing_link if isinstance(j.existing_link, str) \
+                and j.existing_link.startswith("http") else ""
+            reel = _is_reel(j)
+            sim_posts.append({
+                "id": j.row_id, "p": pkey, "date": j.date or "",
+                "day": _fmt_day(j.date, j.day), "st": _status_kind(j.status),
+                "fmt": j.fmt or "", "reel": reel, "car": _is_carousel(j),
+                "handle": _handle(j.platform, pkey), "cap": j.caption or "",
+                "tags": j.hashtags or "", "hook": j.hook or "",
+                "kind": assets["kind"],
+                "eng": engagement(j.row_id, j.platform, reel),
+                "rel": _rel_time(j.date, newest),
+            })
         rollup = (f'<span class="wk-prog"><span class="wk-count">{approved}/{len(wposts)} '
                   f'approved</span><span class="wk-bar"><i style="width:{pct}%"></i></span></span>')
         sections.append(f'<section class="week"><h2><span class="wk-label">'
@@ -619,7 +698,8 @@ def build_preview(calendar_id: str, version: int | None = None, *,
              f'<button class="chip" data-f="facebook">Facebook <b>{counts["facebook"]}</b></button>'
              f'<button class="chip" data-f="tiktok">TikTok <b>{counts["tiktok"]}</b></button>'
              '<span class="chip-sep"></span>'
-             f'<button class="chip" data-f="grid">▦ IG Grid <b>{counts["instagram"]}</b></button></div>')
+             f'<button class="chip sim-open" id="sim-open" data-testid="sim-open-chip">'
+             f'{SVG["phone"]} Simulator</button></div>')
     status_chips = (
         '<div class="chips status"><button class="chip active" data-s="all">All statuses '
         f'<b>{len(jobs)}</b></button>'
@@ -638,22 +718,20 @@ def build_preview(calendar_id: str, version: int | None = None, *,
         f'<button class="chip needs" data-s="needs">⚠ Needs review '
         f'<b>{scount["draft"] + scount["other"]}</b></button></div>')
 
-    grid_html = (
-        '<section id="grid" class="hide"><div class="profile">'
-        f'{_avatar("ring lg")}<div class="pinfo">'
-        '<div class="phandle">wiah_at_ghedeephilosophy</div>'
-        f'<div class="pstats"><b>{counts["instagram"]}</b> posts &nbsp; '
-        'Ghedee Philosophy</div>'
-        '<div class="pbio">The 18 Universal Laws · a philosophy of living, with Wiah. '
-        'Draft feed — newest first.</div></div></div>'
-        f'<div class="iggrid">{"".join(reversed(grid_cells))}</div></section>')
+    # Simulator feed order (FR-4): newest first, undated last, Row ID as a stable tie-break.
+    sim_posts.sort(key=lambda s: (s["date"] or "0000", s["id"]), reverse=True)
+    sim_posts.sort(key=lambda s: 1 if not s["date"] else 0)
+    # "</script>" inside a caption would end the script block early; escaping "<" prevents it.
+    sim_json = json.dumps(sim_posts, ensure_ascii=False).replace("<", "\\u003c")
 
     doc_title = f"Ghedee Social Calendar — {calendar_id.replace('_', ' ')} · Review ({label})"
     page = _PAGE.replace("{{TITLE}}", _esc(doc_title)).replace("{{CHIPS}}", chips) \
         .replace("{{STATUS_CHIPS}}", status_chips) \
-        .replace("{{SECTIONS}}", "".join(sections)).replace("{{GRID}}", grid_html) \
+        .replace("{{SECTIONS}}", "".join(sections)) \
         .replace("{{AVATAR_CSS}}", avatar_css) \
         .replace("{{SHEET_ID}}", _esc(sheet_id or "")) \
+        .replace("{{SIM_POSTS}}", sim_json) \
+        .replace("{{ICONS}}", json.dumps(SVG).replace("<", "\\u003c")) \
         .replace("{{SUBTITLE}}", f"{len(jobs)} posts · draft review")
 
     result = {"calendar_id": calendar_id, "source": label, "posts": len(jobs),
@@ -878,30 +956,6 @@ a.ph-icon.play{text-decoration:none;cursor:pointer}
 .tt-text{font-size:12.5px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .hide{display:none!important}
 .chip-sep{width:1px;align-self:stretch;background:var(--line);margin:2px 2px}
-/* instagram profile grid */
-#grid .profile{display:flex;align-items:center;gap:26px;max-width:820px;margin:6px auto 26px;
-  padding:0 6px}
-.avatar.lg{width:82px;height:82px;font-size:38px}
-#grid .pinfo{min-width:0}
-#grid .phandle{font-size:19px;font-weight:600;margin-bottom:8px}
-#grid .pstats{font-size:14px;color:var(--muted);margin-bottom:8px}
-#grid .pstats b{color:var(--ink)}
-#grid .pbio{font-size:13.5px;color:var(--ink);line-height:1.5;max-width:52ch}
-.iggrid{max-width:820px;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:3px}
-.gcell{position:relative;aspect-ratio:1;overflow:hidden;background:#0d0d0d}
-/* status frame around each grid item (Draft=yellow, Approved=green, else red),
-   drawn as an overlay so it sits ON TOP of the thumbnail */
-.gcell::after{content:"";position:absolute;inset:0;pointer-events:none;
-  border:4px solid var(--sc-bright,transparent);z-index:3}
-.gcell img{width:100%;height:100%;object-fit:cover;display:block}
-.gcorner{position:absolute;top:6px;right:6px;width:19px;height:19px;color:#fff;
-  filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
-.gph{width:100%;height:100%;display:grid;place-items:center;
-  background:linear-gradient(150deg,#22382b,#17281E);color:var(--gold)}
-.gph svg{width:34px;height:34px}
-.gph-fail{background:linear-gradient(150deg,#5a2620,#3a1a17);color:#f0c9c4}
-.gph-none{background:repeating-linear-gradient(45deg,#20302a,#20302a 8px,#1a2823 8px,#1a2823 16px)}
-@media(max-width:520px){#grid .profile{gap:16px}.avatar.lg{width:60px;height:60px;font-size:28px}}
 footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
 /* floating "current week/month" pill (upper-left) + back-to-top button (lower-right) */
 .wknow{position:fixed;left:20px;top:16px;z-index:60;background:var(--surface);
@@ -921,14 +975,223 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
 .totop-btn:hover{background:var(--gold);color:#17281E}
 @media(prefers-color-scheme:dark){.totop-btn{background:var(--gold);color:#17281E}}
 :root[data-theme="dark"] .totop-btn{background:var(--gold);color:#17281E}
+
+/* ============================ PLATFORM SIMULATOR ============================
+   A full-screen overlay showing the calendar as each platform's real feed. Every image
+   here is a CLONE of a node already in the review feed, so the simulator adds no image
+   bytes to this file. */
+.sim{position:fixed;inset:0;z-index:100;display:flex;align-items:stretch;justify-content:center}
+.sim-backdrop{position:absolute;inset:0;background:rgba(8,14,10,.72);backdrop-filter:blur(3px)}
+.sim-panel{position:relative;display:flex;flex-direction:column;width:100%;max-width:1180px;
+  padding:14px 20px 20px;gap:12px}
+.sim-top{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;color:var(--ivory)}
+.sim-tabs{display:flex;gap:8px;flex-wrap:wrap}
+.sim-tab{cursor:pointer;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.08);
+  color:#F4EFE1;border-radius:999px;padding:7px 16px;font-size:13px;font-weight:700;
+  display:inline-flex;gap:7px;align-items:center;transition:background .13s,border-color .13s}
+.sim-tab b{color:var(--gold);font-weight:700}
+.sim-tab:hover{background:rgba(255,255,255,.16)}
+.sim-tab.active{background:var(--gold);border-color:var(--gold);color:#17281E}
+.sim-tab.active b{color:#17281E;opacity:.7}
+.sim-right{margin-left:auto;display:flex;align-items:center;gap:9px}
+.sim-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:rgba(244,239,225,.65)}
+.sim-status{background:rgba(255,255,255,.1);color:#F4EFE1;border:1px solid rgba(255,255,255,.28);
+  border-radius:8px;padding:6px 10px;font:600 12px/1.2 inherit;cursor:pointer;max-width:190px}
+.sim-status option{color:#17281E;background:#fff}
+.sim-btn{cursor:pointer;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.08);
+  color:#F4EFE1;border-radius:8px;padding:6px 12px;font:700 12px/1.2 inherit}
+.sim-btn.on{background:rgba(198,154,82,.9);border-color:var(--gold);color:#17281E}
+.sim-x{cursor:pointer;border:none;background:rgba(255,255,255,.12);color:#F4EFE1;width:34px;
+  height:34px;border-radius:50%;font-size:22px;line-height:1;display:grid;place-items:center}
+.sim-x:hover{background:var(--terra);color:#fff}
+.sim-stage{flex:1;min-height:0;display:flex;align-items:flex-start;justify-content:center;
+  overflow:auto;padding-bottom:6px}
+/* --- the phone chassis (FR-7); [data-chassis=off] strips it away --- */
+.phone{--ph-w:390px;position:relative;width:var(--ph-w);max-width:100%;
+  height:min(820px,calc(100vh - 118px));background:#000;border-radius:44px;
+  border:11px solid #14181c;box-shadow:0 20px 60px rgba(0,0,0,.55),0 0 0 2px #2b3138;
+  display:flex;flex-direction:column;overflow:hidden;flex:none}
+.phone-notch{position:absolute;top:7px;left:50%;transform:translateX(-50%);width:112px;
+  height:26px;background:#000;border-radius:999px;z-index:6}
+.phone-status{display:flex;align-items:center;justify-content:space-between;
+  padding:12px 24px 4px;color:#fff;font:700 12.5px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  flex:none;z-index:5}
+.phone-status .ps-r{display:inline-flex;align-items:center;gap:5px}
+.ps-i{height:11px;width:auto;color:#fff}
+.phone[data-chassis="off"]{--ph-w:470px;border:none;border-radius:14px;
+  height:min(880px,calc(100vh - 118px));box-shadow:0 14px 40px rgba(0,0,0,.4)}
+.phone[data-chassis="off"] .phone-notch,.phone[data-chassis="off"] .phone-status{display:none}
+.app{flex:1;min-height:0;display:flex;flex-direction:column;background:#fff;color:#0e0e0e}
+.phone[data-platform="tiktok"] .app{background:#000;color:#fff}
+/* app chrome: top bar + bottom nav */
+.app-top{flex:none;display:flex;align-items:center;gap:10px;padding:9px 14px;
+  border-bottom:1px solid #e9e9e9;font-weight:700}
+.phone[data-platform="tiktok"] .app-top{border-bottom:none;justify-content:center;gap:18px;
+  background:transparent;position:absolute;top:44px;left:0;right:0;z-index:4}
+.phone[data-chassis="off"][data-platform="tiktok"] .app-top{top:0}
+.app-wordmark{font-family:Georgia,serif;font-size:20px;font-weight:600;letter-spacing:.2px}
+.app-top .sp{margin-left:auto;display:inline-flex;gap:15px}
+.app-top .sp svg{width:21px;height:21px}
+.fb-top{background:#fff;color:#1877F2}
+.tt-top-tab{color:rgba(255,255,255,.6);font-size:14.5px;font-weight:700;
+  text-shadow:0 1px 3px rgba(0,0,0,.5)}
+.tt-top-tab.on{color:#fff;border-bottom:2px solid #fff;padding-bottom:3px}
+.app-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.app-body::-webkit-scrollbar{width:0}
+.app-nav{flex:none;display:flex;align-items:center;justify-content:space-around;
+  padding:9px 8px calc(9px + env(safe-area-inset-bottom,0));border-top:1px solid #e9e9e9;
+  background:#fff;color:#111}
+.app-nav svg{width:23px;height:23px}
+.phone[data-platform="tiktok"] .app-nav{background:#000;color:#fff;border-top-color:#222}
+.app-nav .navlbl{font-size:9px;font-weight:600;margin-top:2px;display:block;text-align:center}
+.app-nav .nv{display:flex;flex-direction:column;align-items:center;opacity:.55}
+.app-nav .nv.on{opacity:1}
+/* --- IG sub-tabs (Feed / Profile / Reels) --- */
+.ig-subtabs{flex:none;display:flex;border-bottom:1px solid #e9e9e9;background:#fff}
+.ig-subtabs button{flex:1;cursor:pointer;border:none;background:none;padding:9px 4px;
+  font:700 12px/1 inherit;color:#8a8a8a;border-bottom:2px solid transparent;
+  text-transform:uppercase;letter-spacing:.06em}
+.ig-subtabs button.on{color:#0e0e0e;border-bottom-color:#0e0e0e}
+/* --- a simulated post --- */
+.s-post{position:relative;border-bottom:1px solid #efefef;background:#fff}
+.s-post:last-child{border-bottom:none}
+.s-head{display:flex;align-items:center;gap:9px;padding:9px 12px}
+.s-ava{width:32px;height:32px;border-radius:50%;flex:none;background-size:cover;
+  background-position:center;background-image:radial-gradient(circle at 30% 25%,#2c4a38,#17281E)}
+.s-ava.ring{box-shadow:0 0 0 2px #fff,0 0 0 4px #C69A52}
+.s-name{font-weight:600;font-size:13.5px}
+.s-sub{font-size:11.5px;color:#65676b;display:flex;align-items:center;gap:4px}
+.s-sub svg{width:11px;height:11px}
+.s-more{margin-left:auto;color:#333;letter-spacing:1px}
+/* NOTE: no img sizing rule here on purpose — the existing .media / .media.vframe rules
+   already size feed media correctly, and overriding them broke 9:16 video posters. */
+.s-acts{display:flex;align-items:center;gap:14px;padding:9px 12px 3px;color:#111}
+.s-acts svg{width:23px;height:23px}
+.s-acts .bm{margin-left:auto}
+.s-likes{padding:1px 12px 0;font-size:13px;font-weight:600}
+.s-cap{margin:4px 12px 6px;font-size:13px;line-height:1.42;color:#0e0e0e;word-break:break-word}
+.s-cap b{font-weight:600;margin-right:5px}
+.s-fold{color:#8a8a8a;cursor:pointer}
+.s-tags{margin:0 12px 6px;font-size:12.5px;color:#3a5aa0;word-break:break-word}
+.s-cmt{margin:0 12px 4px;font-size:12.5px;color:#8a8a8a}
+.s-time{margin:0 12px 11px;font-size:10.5px;color:#8a8a8a;text-transform:uppercase;letter-spacing:.04em}
+/* facebook flavour */
+.fb .s-cap{margin:0 12px 9px;font-size:13.5px}
+.fb-counts{display:flex;align-items:center;gap:6px;padding:7px 12px;font-size:12.5px;
+  color:#65676b;border-top:1px solid #f0f0f0}
+.fb-counts .rx{display:inline-grid;place-items:center;width:17px;height:17px;border-radius:50%;
+  background:#1877F2;color:#fff}
+.fb-counts .rx svg{width:10px;height:10px}
+.fb-counts .rt{margin-left:auto}
+.fb-bar{display:flex;align-items:center;justify-content:space-around;padding:5px 4px;
+  border-top:1px solid #e4e6eb;color:#65676b;font-size:12.5px;font-weight:600}
+.fb-bar span{display:inline-flex;align-items:center;gap:5px}
+.fb-bar svg{width:17px;height:17px}
+/* --- vertical full-bleed surfaces (TikTok + IG Reels) --- */
+.s-vert{height:100%;overflow-y:auto;scroll-snap-type:y mandatory;overscroll-behavior:contain;
+  background:#000}
+.s-vert::-webkit-scrollbar{width:0}
+.s-slide{position:relative;height:100%;scroll-snap-align:start;scroll-snap-stop:always;
+  display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden}
+.s-slide .media{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+.s-slide .media img{width:100%;height:100%;object-fit:cover}
+.s-slide .poster{width:100%;height:100%;min-height:0}
+.s-rail{position:absolute;right:9px;bottom:96px;display:flex;flex-direction:column;
+  align-items:center;gap:15px;color:#fff;z-index:3}
+.s-rail .ri{display:flex;flex-direction:column;align-items:center;gap:3px;
+  filter:drop-shadow(0 1px 3px rgba(0,0,0,.6))}
+.s-rail svg{width:27px;height:27px}
+.s-rail .rn{font-size:11px;font-weight:700}
+.s-rail .s-ava{width:44px;height:44px;box-shadow:0 0 0 2px rgba(255,255,255,.9);margin-bottom:4px}
+.s-vcap{position:absolute;left:12px;right:66px;bottom:86px;color:#fff;z-index:3;
+  text-shadow:0 1px 3px rgba(0,0,0,.65)}
+.s-vcap .vu{font-weight:700;font-size:14px;margin-bottom:3px}
+.s-vcap .vt{font-size:12.5px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:3;
+  -webkit-box-orient:vertical;overflow:hidden}
+.s-vcap .vm{display:flex;align-items:center;gap:6px;font-size:11.5px;margin-top:6px;opacity:.95}
+.s-vcap .vm svg{width:12px;height:12px}
+.s-views{position:absolute;left:12px;bottom:60px;color:#fff;font-size:11.5px;font-weight:700;
+  z-index:3;text-shadow:0 1px 3px rgba(0,0,0,.6)}
+/* --- IG profile tab (absorbed from the removed standalone grid view) --- */
+.s-profile{padding:14px 0 0}
+.s-phead{display:flex;align-items:center;gap:18px;padding:0 16px 14px}
+.s-phead .s-ava{width:74px;height:74px}
+.s-pstats{display:flex;gap:20px;font-size:12.5px;text-align:center}
+.s-pstats b{display:block;font-size:15px}
+.s-pbio{padding:0 16px 14px;font-size:12.5px;line-height:1.45}
+.s-pbio .pn{font-weight:700;display:block}
+.s-pgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px}
+/* No status frame on profile tiles — a real IG profile grid is edge-to-edge. The status
+   colour still reaches you via the hover chip's dot (.s-meta .sd), which is why each cell
+   keeps its st-* class. */
+.s-gcell{position:relative;aspect-ratio:1;overflow:hidden;background:#0d0d0d}
+.s-gcell img{width:100%;height:100%;object-fit:cover;display:block}
+.s-gcorner{position:absolute;top:5px;right:5px;width:17px;height:17px;color:#fff;z-index:2;
+  filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}
+.s-gph{width:100%;height:100%;display:grid;place-items:center;color:#C69A52;
+  background:linear-gradient(150deg,#22382b,#17281E)}
+.s-gph svg{width:28px;height:28px}
+/* --- hover-revealed review metadata (FR-9): pristine at rest, no layout shift --- */
+.s-meta{position:absolute;top:8px;left:8px;z-index:5;display:flex;align-items:center;gap:6px;
+  background:rgba(10,16,12,.86);color:#F4EFE1;border-radius:7px;padding:4px 9px;
+  font:700 10.5px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;white-space:nowrap;
+  opacity:0;transform:translateY(-4px);transition:opacity .13s,transform .13s;pointer-events:none}
+.s-post:hover .s-meta,.s-slide:hover .s-meta,.s-gcell:hover .s-meta,
+.s-post:focus-within .s-meta,.s-gcell:focus-within .s-meta{opacity:1;transform:none}
+.s-meta .sd{width:8px;height:8px;border-radius:2px;background:var(--sc-bright);flex:none}
+.s-meta .sm-date{opacity:.75;font-weight:600}
+.s-gcell .s-meta{top:4px;left:4px;padding:3px 6px;font-size:9.5px}
+.s-post .media,.s-slide .media{position:relative}
+/* --- empty state --- */
+.s-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;gap:8px;padding:30px;text-align:center;color:#8a8a8a;font-size:13px}
+.phone[data-platform="tiktok"] .s-empty{color:#9aa}
+@media(max-width:640px){
+  .sim-panel{padding:10px 10px 14px}
+  .phone{--ph-w:100%;border-width:8px;border-radius:32px}
+  .sim-right{width:100%;margin-left:0}
+}
 </style>
 <div class="wrap">
   <header class="top"><h1>Ghedee Social Calendar</h1><span class="sub">{{SUBTITLE}}</span><span class="who" id="who" hidden></span></header>
   {{CHIPS}}
   {{STATUS_CHIPS}}
   <div id="feed">{{SECTIONS}}</div>
-  {{GRID}}
   <footer id="foot">Draft review · nothing here is published. Approve in the calendar, not this page.</footer>
+</div>
+<!-- platform simulator: a full-screen overlay ABOVE the review feed. The feed stays mounted
+     underneath because it is the source of every media node the simulator clones. -->
+<div class="sim hide" id="sim" aria-hidden="true">
+  <div class="sim-backdrop" data-testid="sim-backdrop"></div>
+  <div class="sim-panel" role="dialog" aria-modal="true" aria-label="Platform simulator">
+    <div class="sim-top">
+      <div class="sim-tabs" role="tablist">
+        <button class="sim-tab active" data-p="instagram" role="tab" data-testid="sim-tab-instagram">Instagram <b>0</b></button>
+        <button class="sim-tab" data-p="facebook" role="tab" data-testid="sim-tab-facebook">Facebook <b>0</b></button>
+        <button class="sim-tab" data-p="tiktok" role="tab" data-testid="sim-tab-tiktok">TikTok <b>0</b></button>
+      </div>
+      <div class="sim-right">
+        <label class="sim-lbl" for="sim-status">Showing</label>
+        <select class="sim-status" id="sim-status" data-testid="sim-status"></select>
+        <button class="sim-btn on" id="sim-chassis" aria-pressed="true" data-testid="sim-chassis-toggle">Phone frame</button>
+        <button class="sim-x" id="sim-close" aria-label="Close simulator" data-testid="sim-close">&times;</button>
+      </div>
+    </div>
+    <div class="sim-stage">
+      <div class="phone" id="phone" data-chassis="on" data-platform="instagram">
+        <div class="phone-notch"></div>
+        <div class="phone-status">
+          <span class="ps-t">9:41</span>
+          <span class="ps-r">
+            <svg viewBox="0 0 20 12" class="ps-i"><path d="M1 9h2v3H1zM5 6h2v6H5zM9 3.5h2V12H9zM13 1h2v11h-2z" fill="currentColor"/></svg>
+            <svg viewBox="0 0 20 14" class="ps-i"><path d="M10 12.5 1.5 5a12 12 0 0 1 17 0z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+            <svg viewBox="0 0 26 12" class="ps-i"><rect x="1" y="1" width="20" height="10" rx="3" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="3" y="3" width="14" height="6" rx="1.5" fill="currentColor"/><path d="M23 4.5v3" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+          </span>
+        </div>
+        <div class="app" id="app"></div>
+      </div>
+    </div>
+  </div>
 </div>
 <div class="toast" id="toast"></div>
 <div class="wknow" id="totop-wk"></div>
@@ -970,15 +1233,6 @@ function viewMatch(c){
   return c.dataset.platform===flt.f;
 }
 function applyFilter(){
-  var grid=document.getElementById('grid'), feed=document.getElementById('feed');
-  var inGrid = flt.f==='grid';
-  feed.classList.toggle('hide', inGrid);
-  if(grid) grid.classList.toggle('hide', !inGrid);
-  if(inGrid){
-    document.querySelectorAll('.gcell').forEach(function(c){
-      c.classList.toggle('hide', !statusMatch(c.dataset.status)); });
-    return;
-  }
   document.querySelectorAll('.card').forEach(function(c){
     var vis=viewMatch(c) && statusMatch(c.dataset.status);
     c.classList.toggle('hide', !vis);
@@ -986,6 +1240,8 @@ function applyFilter(){
   document.querySelectorAll('.week').forEach(function(w){
     w.classList.toggle('hide', !w.querySelector('.card:not(.hide)')); });
   if(window.__syncTop) window.__syncTop();
+  // the simulator reads the SAME flt.s, so one filter drives both views
+  if(window.__simRefresh) window.__simRefresh();
 }
 document.querySelectorAll('.chip[data-f]').forEach(function(btn){
   btn.addEventListener('click',function(){
@@ -1186,6 +1442,367 @@ function showViewer(){
     if(f) f.textContent='Live editing on · status changes save straight to the calendar sheet.';
   }
   hydrateStatuses();  // reflect the sheet's current statuses on every load
+})();
+// ======================= PLATFORM SIMULATOR =======================
+// Renders the calendar as each platform's real feed. The key move: every image shown here
+// is a cloneNode() of a media element already in the review feed, so the simulator adds
+// ZERO image bytes to this file — cloning copies the src STRING, not the data.
+var SIM_POSTS = {{SIM_POSTS}};
+var ICONS = {{ICONS}};
+(function(){
+  var sim=document.getElementById('sim'); if(!sim) return;
+  var app=document.getElementById('app'), phone=document.getElementById('phone'),
+      openBtn=document.getElementById('sim-open'), selStatus=document.getElementById('sim-status');
+  // Only the VISIBLE surface is ever built (render() is called on open and on each tab
+  // switch), so opening the simulator never stalls on constructing all five at once.
+  var S={open:false, platform:'instagram', igTab:'feed', chassis:true};
+  // row id -> review card, resolved once (avoids re-querying and any id-escaping concerns)
+  var CARD={};
+  document.querySelectorAll('#feed .card').forEach(function(c){ CARD[c.dataset.rowid]=c; });
+
+  var STATUS_OPTS=[['all','All statuses'],['ok','Approved'],['draft','Draft'],
+    ['await','Awaiting Asset'],['review','Wiah Review'],['other','Other'],
+    ['delivered','Asset Delivered'],['needs','Needs review']];
+
+  function fmtN(n){
+    if(n>=1000000) return (n/1000000).toFixed(1).replace(/\.0$/,'')+'M';
+    if(n>=1000) return (n/1000).toFixed(1).replace(/\.0$/,'')+'K';
+    return String(n);
+  }
+  function el(tag, cls, txt){
+    var e=document.createElement(tag);
+    if(cls) e.className=cls;
+    if(txt!=null) e.textContent=txt;   // textContent, never innerHTML, for sheet-authored copy
+    return e;
+  }
+  function icon(name, cls){
+    var s=el('span', cls||'ico');
+    s.innerHTML=ICONS[name]||'';       // trusted: our own constant icon table
+    return s;
+  }
+  // --- membership + ordering (D3). SIM_POSTS is already sorted newest-first. ---
+  function posts(platform, only){
+    return SIM_POSTS.filter(function(p){
+      if(p.p!==platform) return false;
+      if(only==='reel' && !p.reel) return false;
+      return statusMatch(p.st);        // the review page's own status filter
+    });
+  }
+  function mediaClone(p){
+    var card=CARD[p.id]; if(!card) return null;
+    var m=card.querySelector('.media'); if(!m) return null;
+    var c=m.cloneNode(true);
+    c.querySelectorAll('.cnav,.badge,.dots').forEach(function(n){ n.remove(); });
+    return c;
+  }
+  function imgClone(p){
+    var card=CARD[p.id]; if(!card) return null;
+    var i=card.querySelector('.media img');
+    return i? i.cloneNode(true) : null;
+  }
+  function meta(p){
+    var m=el('div','s-meta');
+    m.appendChild(el('i','sd'));
+    m.appendChild(el('span',null,p.id));
+    if(p.day) m.appendChild(el('span','sm-date',p.day));
+    return m;
+  }
+  function avatar(cls){
+    var a=el('span','s-ava '+(cls||''));
+    var src=document.querySelector('.avatar.ava-photo');
+    if(src){ var bg=getComputedStyle(src).backgroundImage; if(bg && bg!=='none') a.style.backgroundImage=bg; }
+    return a;
+  }
+  function caption(p, withHandle){
+    if(!p.cap) return null;
+    var c=el('p','s-cap');
+    if(withHandle) c.appendChild(el('b',null,p.handle));
+    var full=p.cap, fold=125;
+    if(full.length>fold){
+      c.appendChild(document.createTextNode(full.slice(0,fold).trim()+'… '));
+      var more=el('span','s-fold','more');
+      more.addEventListener('click',function(){
+        c.textContent=''; if(withHandle) c.appendChild(el('b',null,p.handle));
+        c.appendChild(document.createTextNode(full));
+      });
+      c.appendChild(more);
+    } else { c.appendChild(document.createTextNode(full)); }
+    return c;
+  }
+  function wrapPost(p, cls){
+    var a=el('article','s-post st-'+p.st+(cls?' '+cls:''));
+    a.dataset.rowid=p.id;
+    return a;
+  }
+  // ---------------- Instagram: Feed ----------------
+  function buildIGFeed(host){
+    var list=posts('instagram');
+    if(!list.length) return host.appendChild(empty());
+    list.forEach(function(p){
+      var a=wrapPost(p);
+      var h=el('div','s-head');
+      h.appendChild(avatar('ring'));
+      h.appendChild(el('span','s-name',p.handle));
+      h.appendChild(el('span','s-more','···'));
+      a.appendChild(h);
+      var m=mediaClone(p); if(m) a.appendChild(m);
+      var acts=el('div','s-acts');
+      ['heart','comment','share'].forEach(function(n){ acts.appendChild(icon(n)); });
+      acts.appendChild(icon('bookmark','ico bm'));
+      a.appendChild(acts);
+      a.appendChild(el('div','s-likes',fmtN(p.eng.likes)+' likes'));
+      var c=caption(p,true); if(c) a.appendChild(c);
+      if(p.tags) a.appendChild(el('p','s-tags',p.tags));
+      if(p.eng.comments) a.appendChild(el('div','s-cmt','View all '+fmtN(p.eng.comments)+' comments'));
+      if(p.rel) a.appendChild(el('div','s-time',p.rel+' ago'));
+      a.appendChild(meta(p));
+      host.appendChild(a);
+    });
+  }
+  // ---------------- Instagram: Profile grid ----------------
+  function buildIGProfile(host){
+    var list=posts('instagram');
+    var wrap=el('div','s-profile');
+    var head=el('div','s-phead');
+    head.appendChild(avatar('ring'));
+    var st=el('div','s-pstats');
+    [[list.length,'posts'],[1284,'followers'],[312,'following']].forEach(function(pair){
+      var d=el('div'); d.appendChild(el('b',null,fmtN(pair[0])));
+      d.appendChild(document.createTextNode(pair[1])); st.appendChild(d);
+    });
+    head.appendChild(st); wrap.appendChild(head);
+    var bio=el('div','s-pbio');
+    bio.appendChild(el('span','pn','Ghedee Philosophy'));
+    bio.appendChild(document.createTextNode(
+      'The 18 Universal Laws · a philosophy of living, with Wiah.'));
+    wrap.appendChild(bio);
+    if(!list.length){ wrap.appendChild(empty()); host.appendChild(wrap); return; }
+    var grid=el('div','s-pgrid');
+    list.forEach(function(p){
+      var cell=el('div','s-gcell st-'+p.st);
+      var img=imgClone(p);
+      if(img){ cell.appendChild(img); }
+      else {
+        var ph=el('div','s-gph');
+        ph.appendChild(icon(p.kind==='none'&&p.reel?'film':'play','')); cell.appendChild(ph);
+      }
+      if(p.car) cell.appendChild(icon('stack','s-gcorner'));
+      else if(p.kind==='video'||p.reel) cell.appendChild(icon('reel','s-gcorner'));
+      cell.appendChild(meta(p));
+      grid.appendChild(cell);
+    });
+    wrap.appendChild(grid); host.appendChild(wrap);
+  }
+  // ---------------- vertical surfaces: IG Reels + TikTok ----------------
+  function buildVertical(host, platform, only, flavour){
+    var list=posts(platform, only);
+    if(!list.length) return host.appendChild(empty());
+    var v=el('div','s-vert');
+    list.forEach(function(p){
+      var s=el('div','s-slide st-'+p.st);
+      s.dataset.rowid=p.id;
+      var m=mediaClone(p); if(m) s.appendChild(m);
+      var rail=el('div','s-rail');
+      rail.appendChild(avatar(''));
+      [['heart',p.eng.likes],['comment',p.eng.comments],
+       ['bookmark',p.eng.saves],['share',p.eng.shares]].forEach(function(pair){
+        var ri=el('div','ri'); ri.appendChild(icon(pair[0]));
+        ri.appendChild(el('span','rn',fmtN(pair[1]))); rail.appendChild(ri);
+      });
+      s.appendChild(rail);
+      var cap=el('div','s-vcap');
+      cap.appendChild(el('div','vu',p.handle));
+      if(p.cap) cap.appendChild(el('div','vt',p.cap));
+      var mus=el('div','vm'); mus.appendChild(icon('music',''));
+      mus.appendChild(el('span',null,'original audio · '+p.handle));
+      cap.appendChild(mus);
+      s.appendChild(cap);
+      if(p.eng.views) s.appendChild(el('div','s-views',fmtN(p.eng.views)+' views'));
+      s.appendChild(meta(p));
+      v.appendChild(s);
+    });
+    host.appendChild(v);
+  }
+  // ---------------- Facebook ----------------
+  function buildFB(host){
+    var list=posts('facebook');
+    if(!list.length) return host.appendChild(empty());
+    list.forEach(function(p){
+      var a=wrapPost(p,'fb');
+      var h=el('div','s-head');
+      h.appendChild(avatar(''));
+      var nm=el('div');
+      nm.appendChild(el('div','s-name','Wiah at Ghedee Philosophy'));
+      var sub=el('div','s-sub');
+      sub.appendChild(el('span',null,p.rel||p.day));
+      sub.appendChild(icon('globe','')); nm.appendChild(sub);
+      h.appendChild(nm); h.appendChild(el('span','s-more','···'));
+      a.appendChild(h);
+      var c=caption(p,false); if(c) a.appendChild(c);      // FB: caption ABOVE the media
+      var m=mediaClone(p); if(m) a.appendChild(m);
+      var counts=el('div','fb-counts');
+      counts.appendChild(icon('like','rx'));
+      counts.appendChild(el('span',null,fmtN(p.eng.likes)));
+      counts.appendChild(el('span','rt',fmtN(p.eng.comments)+' comments · '+
+        fmtN(p.eng.shares)+' shares'));
+      a.appendChild(counts);
+      var bar=el('div','fb-bar');
+      [['like','Like'],['comment','Comment'],['share','Share']].forEach(function(pair){
+        var s=el('span'); s.appendChild(icon(pair[0],''));
+        s.appendChild(document.createTextNode(pair[1])); bar.appendChild(s);
+      });
+      a.appendChild(bar);
+      a.appendChild(meta(p));
+      host.appendChild(a);
+    });
+  }
+  function empty(){
+    var e=el('div','s-empty');
+    e.appendChild(el('div',null,'No posts match the current filter.'));
+    e.appendChild(el('div',null,'Change "Showing" above to see more.'));
+    return e;
+  }
+  // ---------------- app chrome ----------------
+  function topBar(platform){
+    var t=el('div','app-top'+(platform==='facebook'?' fb-top':''));
+    if(platform==='instagram'){
+      t.appendChild(el('span','app-wordmark','Instagram'));
+      var sp=el('span','sp'); sp.appendChild(icon('heart','')); sp.appendChild(icon('inbox',''));
+      t.appendChild(sp);
+    } else if(platform==='facebook'){
+      t.appendChild(el('span','app-wordmark','facebook'));
+      var sp2=el('span','sp'); sp2.appendChild(icon('search','')); sp2.appendChild(icon('inbox',''));
+      t.appendChild(sp2);
+    } else {
+      t.appendChild(el('span','tt-top-tab','Following'));
+      t.appendChild(el('span','tt-top-tab on','For You'));
+    }
+    return t;
+  }
+  function navBar(platform){
+    var n=el('div','app-nav');
+    var items = platform==='tiktok'
+      ? [['home','Home',1],['search','Discover',0],['add','',0],['inbox','Inbox',0],['person','Profile',0]]
+      : [['home','',1],['search','',0],['add','',0],['heart','',0],['person','',0]];
+    items.forEach(function(it){
+      var d=el('div','nv'+(it[2]?' on':''));
+      d.appendChild(icon(it[0],''));
+      if(it[1]) d.appendChild(el('span','navlbl',it[1]));
+      n.appendChild(d);
+    });
+    return n;
+  }
+  // ---------------- render ----------------
+  function render(){
+    phone.dataset.platform=S.platform;
+    app.textContent='';
+    app.appendChild(topBar(S.platform));
+    if(S.platform==='instagram'){
+      var tabs=el('div','ig-subtabs');
+      [['feed','Feed'],['profile','Profile'],['reels','Reels']].forEach(function(pair){
+        var b=el('button',(S.igTab===pair[0]?'on':''),pair[1]);
+        b.setAttribute('data-testid','sim-igtab-'+pair[0]);
+        b.addEventListener('click',function(){ S.igTab=pair[0]; render(); });
+        tabs.appendChild(b);
+      });
+      app.appendChild(tabs);
+    }
+    var body=el('div','app-body');
+    if(S.platform==='instagram'){
+      if(S.igTab==='feed') buildIGFeed(body);
+      else if(S.igTab==='profile') buildIGProfile(body);
+      else buildVertical(body,'instagram','reel');
+    } else if(S.platform==='facebook'){ buildFB(body); }
+    else { buildVertical(body,'tiktok'); }
+    if(S.platform==='tiktok'||(S.platform==='instagram'&&S.igTab==='reels')){
+      body.style.overflow='hidden';   // the inner .s-vert owns the scrolling
+    }
+    app.appendChild(body);
+    app.appendChild(navBar(S.platform));
+    rebindCarousels(body);
+    counts();
+  }
+  function counts(){
+    document.querySelectorAll('.sim-tab').forEach(function(t){
+      var b=t.querySelector('b'); if(b) b.textContent=posts(t.dataset.p).length;
+    });
+  }
+  // Cloned carousels arrive without their bindings; re-attach the page's own binder so a
+  // multi-slide post swipes in the simulator exactly as it does in the review feed.
+  function rebindCarousels(root){
+    root.querySelectorAll('.media.carousel').forEach(function(c){
+      var track=c.querySelector('.track'); if(!track) return;
+      var n=track.children.length, i=0;
+      var prev=el('button','cnav prev','‹'), next=el('button','cnav next','›');
+      var badge=el('span','badge'); var bi=el('b','cidx','1');
+      badge.appendChild(bi); badge.appendChild(document.createTextNode('/'+n));
+      c.appendChild(prev); c.appendChild(next); c.appendChild(badge);
+      function sync(){ bi.textContent=i+1; prev.disabled=i===0; next.disabled=i===n-1; }
+      function go(k){ i=Math.max(0,Math.min(n-1,k));
+        track.scrollTo({left:i*track.clientWidth,behavior:'smooth'}); sync(); }
+      prev.addEventListener('click',function(e){e.stopPropagation();go(i-1)});
+      next.addEventListener('click',function(e){e.stopPropagation();go(i+1)});
+      var t; track.addEventListener('scroll',function(){clearTimeout(t);t=setTimeout(function(){
+        var k=Math.round(track.scrollLeft/Math.max(1,track.clientWidth));
+        if(k!==i){i=k; sync();} },90)});
+      sync();
+    });
+  }
+  // ---- video posts: poster frame + a play button that opens the clip on Drive ----
+  // There is deliberately NO inline playback. Both embed routes were tried and measured:
+  //   * a native <video> against drive.usercontent.google.com/download — Drive answers a
+  //     browser's `Origin: null` (any file:// page) with 403 and no Access-Control-Allow-Origin,
+  //     and the no-cors path is blocked by its Cross-Origin-Resource-Policy: same-site.
+  //   * Drive's own /file/d/<id>/preview player — works, but it is a player PAGE and draws a
+  //     toolbar above the picture, which reads as a black band across the top of a feed post.
+  // So the choice was a broken embed, a fake-looking band, or a clean still. A paused feed
+  // shows stills anyway, so the cloned poster + its existing <a> to Drive is the honest
+  // answer, and needs no code at all — the anchor comes across in the clone.
+
+  // ---------------- controls ----------------
+  function open(){
+    S.open=true; sim.classList.remove('hide'); sim.setAttribute('aria-hidden','false');
+    document.body.style.overflow='hidden';
+    syncStatusSelect(); render();
+    document.getElementById('sim-close').focus();
+  }
+  function close(){
+    S.open=false; sim.classList.add('hide'); sim.setAttribute('aria-hidden','true');
+    document.body.style.overflow='';        // review feed was never unmounted -> scroll
+    if(openBtn) openBtn.focus();            // position and filters are inherently intact
+  }
+  if(openBtn) openBtn.addEventListener('click',open);
+  document.getElementById('sim-close').addEventListener('click',close);
+  sim.querySelector('.sim-backdrop').addEventListener('click',close);
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape'&&S.open) close(); });
+  document.querySelectorAll('.sim-tab').forEach(function(t){
+    t.addEventListener('click',function(){
+      document.querySelectorAll('.sim-tab').forEach(function(x){x.classList.remove('active')});
+      t.classList.add('active'); S.platform=t.dataset.p; render();
+    });
+  });
+  var chassisBtn=document.getElementById('sim-chassis');
+  chassisBtn.addEventListener('click',function(){
+    S.chassis=!S.chassis;
+    phone.dataset.chassis=S.chassis?'on':'off';
+    chassisBtn.classList.toggle('on',S.chassis);
+    chassisBtn.setAttribute('aria-pressed',String(S.chassis));
+  });
+  // The overlay covers the page's status chips, so it carries a mirror of them. Both write
+  // the SAME flt.s, so the two views can never disagree.
+  STATUS_OPTS.forEach(function(pair){
+    var o=document.createElement('option'); o.value=pair[0]; o.textContent=pair[1];
+    selStatus.appendChild(o);
+  });
+  function syncStatusSelect(){ selStatus.value=flt.s; }
+  selStatus.addEventListener('change',function(){
+    flt.s=selStatus.value;
+    document.querySelectorAll('.chip[data-s]').forEach(function(b){
+      b.classList.toggle('active', b.dataset.s===flt.s); });
+    applyFilter();
+  });
+  window.__simRefresh=function(){ syncStatusSelect(); if(S.open) render(); else counts(); };
+  counts();
 })();
 // back-to-top button + live "current week/month" indicator
 (function(){

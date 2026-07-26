@@ -50,5 +50,7 @@
       `add_audit_conditional_formatting`; `AUDIT_STATUS_VALUES` + `AUDIT_STATUS_FILLS`.
 - [x] `tests/`: 45 total pass (added find_urls, duplicate_hashtags, caption links/placement,
       readiness, duration bounds, worst-wins FAIL>WARN, status_word/note_text).
-- [~] Validate: dry-run clean (55 pass / 65 warn — mostly real duplicate/repeated hashtags,
-      verified); mock in progress; live (schema migration + coloured write-back) pending go.
+- [x] Validate: dry-run clean (55 pass / 65 warn — mostly real duplicate/repeated hashtags,
+      verified); mock clean; **live run done and successful** (2026-07-26, reported by the user)
+      — schema migration + dropdown/colour install + verdict write-back applied to the living
+      Q3_2026 sheet. Merged as PR #17 (`b350b18`).
