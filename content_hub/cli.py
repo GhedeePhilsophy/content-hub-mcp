@@ -84,6 +84,21 @@ def _register_social(workflows) -> None:
         a.calendar_id, mode=a.mode, only=a.only, image_model=a.image_model,
         video_model=a.video_model, video_duration=a.video_duration))
 
+    au = ops.add_parser("audit", help="Audit posts for asset (aspect/resolution/file-size) + "
+                        "caption compliance vs. the current per-platform standards.")
+    au.add_argument("calendar_id", help="e.g. Q3_2026")
+    au.add_argument("--mode", choices=["dry-run", "mock", "live"], default="dry-run",
+                    help="dry-run: classify + caption checks only (no download, no write). "
+                         "mock: full read-only inspection, no write. live: inspect + write "
+                         "verdicts into Audit Results.")
+    au.add_argument("--statuses", default=None,
+                    help="Comma-separated statuses to audit (default: all rows). "
+                         "e.g. Approved to check a round before export.")
+    au.set_defaults(func=lambda a: social.audit_calendar(
+        a.calendar_id, mode=a.mode,
+        statuses=tuple(s.strip() for s in a.statuses.split(",") if s.strip())
+        if a.statuses else None))
+
     c = ops.add_parser("create", help="Initialise a new calendar: Drive folders + an empty "
                        "living Google Sheet shell (fill it with `add`).")
     c.add_argument("calendar_id", help="A quarter (Q3_2026), a date range, or a single day; "
@@ -150,6 +165,13 @@ def _register_social(workflows) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Emit UTF-8 regardless of the console/redirect codepage (Windows defaults to cp1252,
+    # which mangles the curly quotes / em-dashes in captions and audit notes).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
     config.load_dotenv()
     ap = argparse.ArgumentParser(prog="content_hub.cli",
                                  description="Ghedee Content Hub workflows — manual runner.")

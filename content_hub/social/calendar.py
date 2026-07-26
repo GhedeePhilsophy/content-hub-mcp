@@ -101,6 +101,9 @@ _HEADER_ALIASES = {
                        "selected asset link", "selected asset"},
     "status": {"status"},
     "notes": {"your notes", "notes"},
+    # Machine-written audit findings (the post audit owns this column, like generate owns
+    # the asset/cost cells). Human-readable, non-approval, safe to overwrite each run.
+    "audit_results": {"audit results"},
     "slides": {"slides", "slide count", "# slides"},
     "carousel_group": {"carousel group", "group"},
 }
@@ -118,7 +121,7 @@ SHELL_HEADERS = [
     "Platform", "Format", "Slides", "Headline", "Caption",
     "First-comment Hashtags (IG)", "Visual Type", "Visual Direction", "Prompt",
     "AI Model", "Est. Cost (USD)", "Generated Asset Link", "Created Asset Link",
-    "Your Notes", "Revision (Claude)",
+    "Your Notes", "Audit Results",
 ]
 SHELL_COL_WIDTHS = [13, 14, 6, 10, 26, 14, 16, 22, 28, 10, 30, 18, 50, 26, 26, 40, 16,
                     30, 13, 13, 13, 13]
@@ -345,7 +348,7 @@ class Calendar:
         pillar = str(self._get(r, "pillar") or "").strip()
         hook = str(self._get(r, "hook") or "").strip()
         model_cell = str(self._get(r, "ai_model") or "").strip()
-        plan = rules.plan_visual(visual_type, fmt)
+        plan = rules.plan_visual(visual_type, fmt, platform)
 
         job = RowJob(row_index=r, row_id=row_id, platform=platform, pillar=pillar,
                      hook=hook, status=status, visual_type=visual_type, fmt=fmt,
