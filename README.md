@@ -205,6 +205,50 @@ them unless `force=true`, `add` refuses them outright. Constrained columns (Plat
 Format / Visual Type) are validated against their allowed values, and an unknown column
 or Row ID is rejected with a clear message.
 
+## The review page (and the platform simulators)
+
+`social preview` builds a **single self-contained HTML file** from the living sheet and
+publishes it beside the calendar in `00_Calendar & Docs`. Every asset is read from Drive,
+downscaled, and inlined as a data URI, so the page opens offline and can be shared as one
+file. A per-calendar cache keyed by Drive md5 means a rebuild only re-fetches assets that
+actually changed. `--no-publish` builds locally without uploading; `--no-cache` re-encodes
+everything.
+
+The page has two views:
+
+**Review feed** (default) — every post in its platform's chrome, inside a status-framed
+card carrying the Row ID, date, format, a status pill and copy-caption / Sheet / Asset
+buttons, grouped by week with an approval roll-up per week. Chips filter by platform,
+Reels, Carousels and status. Served through the Apps Script web app, the status pill is a
+live dropdown that writes straight back to the sheet.
+
+**Simulator** — the *Simulator* chip opens a full-screen overlay showing the calendar as
+each platform's real feed, inside a phone chassis (toggleable via *Phone frame*):
+
+| Platform | Surfaces |
+|---|---|
+| Instagram | **Feed** · **Profile** grid · **Reels** |
+| Facebook | Feed (caption above media, reaction bar) |
+| TikTok | Full-bleed 9:16, snap-scrolled, with the action rail |
+
+Posts run newest-first, the review page's status filter carries through (mirrored as the
+*Showing* dropdown in the overlay header), and **hovering** a post reveals its Row ID, date
+and status. Engagement counts are **simulated** — the calendar holds no performance data —
+and are derived deterministically from the Row ID, so they never change between rebuilds.
+Adjust their scale via `_ENGAGE_LIKES` / `_ENGAGE_VIEWS` in `social/preview.py`.
+
+Video posts show the clip's first frame with a play button that **opens it on Drive** in a
+new tab. There is no inline playback, and that is deliberate — both routes were tried and
+measured. A native `<video>` cannot load the file: Drive answers a browser's `Origin: null`
+(any page opened from disk) with `403` and no `Access-Control-Allow-Origin`, and blocks the
+non-CORS path with `Cross-Origin-Resource-Policy: same-site`. Drive's own `/preview` player
+does work, but it is a player *page* and draws a toolbar above the picture, which reads as a
+black band across the top of a feed post. A paused feed shows stills anyway.
+
+The simulator adds **no image bytes** to the file: each surface is built in the browser by
+cloning media nodes the review feed already contains, so every asset is embedded exactly
+once. There is no separate "IG Grid" view — it is now the Instagram simulator's Profile tab.
+
 ## Exporting to a scheduler
 
 `social export` turns the finished part of the calendar into a scheduler's bulk-import

@@ -72,7 +72,9 @@ content_hub/
     edit_ops.py          in-place cell edits + bulk row appends (schema-aware guardrails)
     audit.py             compliance audit: measure real assets + captions vs specs; write
                          PASS/WARN/FAIL to Audit Status (colour-coded) + reasons to Audit Note (live)
-    preview.py           the self-contained HTML review page
+    preview.py           the self-contained HTML review page + the IG/FB/TikTok feed
+                         simulators (built browser-side by CLONING the review feed's media
+                         nodes, so every asset is inlined exactly once — see below)
     exporters/           scheduler bulk-import files (registry: metricool, publer)
   cli.py                 manual dry/mock/live harness for the same operations
 tests/                   property tests (pytest+hypothesis) for the pure specs/audit logic
@@ -86,6 +88,12 @@ tests/                   property tests (pytest+hypothesis) for the pure specs/a
 - **Row ID is the stable key.** The Drive existence check matches on the `{RowID}_` prefix, so editing a headline never orphans an already-generated file. **Idempotency:** a row is skipped if its asset already exists on Drive — deleting the Drive file (or a carousel's group folder) is how you request a regeneration.
 - **Schema-aware guardrails** (this is why `edit`/`add` are tools, not a raw Sheets connector): `Status` is never editable (approval is a human-only decision in the sheet); new rows default to `Draft`; the machine-owned columns (Generated Asset Link / Est. Cost / AI Model) are written only by `generate` and are `force`-gated in `edit`, refused in `add`; Platform / Format / Visual Type are validated against allowed values. A whole batch is validated first — if any edit is invalid, **nothing** is written.
 - **Kind + aspect ratio derive from `Visual Type`**, not from `Format` alone (see the table in README.md). `Recorded video of Wiah` rows are never AI-generated.
+- **The preview page is ONE self-contained file, and assets are inlined exactly once.** The
+  IG/FB/TikTok simulators emit **no image bytes**: each surface is built in the browser by
+  `cloneNode`-ing a media element already in the review feed (a clone copies the `src`
+  string, not the data). Rendering a new surface server-side would multiply a ~9 MB page.
+  For the same reason the old "IG Grid" view was removed — it emitted a second, 340px
+  encoding of every Instagram asset; it is now the simulator's Profile tab.
 - **Export URL form depends on the scheduler** — whether it *fetches* bytes or *parses* a Drive share link. Metricool fetches (needs `download` style); Publer resolves share links. See the Drive media-URL table in README.md before touching `exporters/`. Exported assets must stay link-shared; the exporter never changes Drive permissions.
 
 ## Config & secrets
