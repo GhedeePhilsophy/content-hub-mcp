@@ -157,6 +157,19 @@ class DriveClient:
         return self.svc.files().get(fileId=file_id, fields=fields,
                                     supportsAllDrives=True).execute()
 
+    def is_link_shared(self, file_id: str) -> bool:
+        """True if the file/folder is readable by 'anyone with the link' — the sharing a
+        scheduler needs to fetch the media. Best-effort: on any permission-read error
+        (e.g. a managed drive that hides permissions) returns True so the audit doesn't
+        cry wolf about sharing it can't actually verify."""
+        try:
+            res = self.svc.permissions().list(
+                fileId=file_id, fields="permissions(type,role)",
+                supportsAllDrives=True).execute()
+        except Exception:
+            return True
+        return any(p.get("type") == "anyone" for p in res.get("permissions", []))
+
     def make_shareable(self, file_id: str) -> str | None:
         """Grant 'anyone with the link — Viewer' and return the webViewLink. Used so
         the calendar's Drive link is openable by reviewers / the scheduler."""

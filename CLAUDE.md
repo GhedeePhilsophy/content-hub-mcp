@@ -45,7 +45,7 @@ Every operation takes `mode`:
 
 `social_edit_calendar` / `social_add_rows` have no `mock` (nothing is generated or spent, so `dry-run` is already the safe preview).
 
-`social_audit_calendar` spends **nothing** in any mode (it only reads assets): `dry-run` classifies + checks captions without downloading; `mock` does the full read-only inspection (downloads + measures) but writes nothing; `live` also writes each row's verdict to the **Audit Results** column. The audit only *reports* — it never regenerates, moves, deletes, or re-permissions an asset.
+`social_audit_calendar` spends **nothing** in any mode (it only reads assets): `dry-run` classifies + checks captions without downloading; `mock` does the full read-only inspection (downloads + measures) but writes nothing; `live` also writes each row's verdict to **Audit Status** (PASS/WARN/FAIL, colour-coded green/yellow/red via a dropdown + conditional formatting) and the reasons to **Audit Note** (blank when PASS). It checks asset aspect/resolution/file-size/**video-duration**, caption length/hashtags/**links/placement/duplicates**, row **readiness** (Approved-but-not-ready), asset **link-sharing**, and duplicate assets. The audit only *reports* — it never regenerates, moves, deletes, or re-permissions an asset.
 
 ## Architecture
 
@@ -71,7 +71,7 @@ content_hub/
     sheet_ops.py         create the living sheet shell
     edit_ops.py          in-place cell edits + bulk row appends (schema-aware guardrails)
     audit.py             compliance audit: measure real assets + captions vs specs; write
-                         per-row verdicts to the Audit Results column (live)
+                         PASS/WARN/FAIL to Audit Status (colour-coded) + reasons to Audit Note (live)
     preview.py           the self-contained HTML review page
     exporters/           scheduler bulk-import files (registry: metricool, publer)
   cli.py                 manual dry/mock/live harness for the same operations

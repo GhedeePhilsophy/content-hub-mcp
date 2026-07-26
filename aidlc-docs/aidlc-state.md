@@ -5,8 +5,10 @@
 **Feature**: Social Calendar post audit (asset + caption compliance vs. per-platform / per-post-type standards)
 
 ## Current Phase
-**CONSTRUCTION** → Units A & B code-generated and validated (mock). At the Unit B review gate;
-live sheet write-back not yet run (deliberate — a production-sheet mutation for the user to trigger).
+**CONSTRUCTION** → Base feature merged (PR #16). **Follow-up increment** (Tier 1+2 checks +
+split Audit Status/Audit Note columns) code-complete; dry-run validated, mock running, live
+(schema migration + coloured write-back) pending user go. See
+`construction/plans/followup-tier12-plan.md`.
 
 ## Stage Ledger
 | Phase | Stage | Status |
