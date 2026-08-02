@@ -23,6 +23,7 @@ python server.py                    # run the MCP server over stdio
 
 # CLI harness — same operations the MCP tools call, for manual dry/mock/live testing:
 python -m content_hub.cli social create Q3_2026
+python -m content_hub.cli social describe Q3_2026    # columns + rows; read-only, no mode
 python -m content_hub.cli social add Q3_2026 @rows.json --mode dry-run
 python -m content_hub.cli social edit Q3_2026 '[{"row_id":"IG-014","column":"Caption","value":"…"}]' --mode live
 python -m content_hub.cli social generate Q3_2026 --mode dry-run    # dry-run | mock | live
@@ -43,7 +44,7 @@ Every operation takes `mode`:
 - **`mock`** — placeholder files; uploads + write-back routed to a SAFE mock destination (`SOCIAL_CALENDAR_MOCK_ROOT_ID`, or a `_mock rehearsal` subfolder). Production is never touched.
 - **`live`** — the real run: spends credits, writes to Drive + the living sheet.
 
-`social_edit_calendar` / `social_add_rows` have no `mock` (nothing is generated or spent, so `dry-run` is already the safe preview).
+`social_edit_calendar` / `social_add_rows` have no `mock` (nothing is generated or spent, so `dry-run` is already the safe preview). `social_describe_calendar` has no `mode` at all — it only reads the sheet's shape (columns + rows) so a caller can compose edits against the real header row instead of guessing.
 
 `social_audit_calendar` spends **nothing** in any mode (it only reads assets): `dry-run` classifies + checks captions without downloading; `mock` does the full read-only inspection (downloads + measures) but writes nothing; `live` also writes each row's verdict to **Audit Status** (PASS/WARN/FAIL, colour-coded green/yellow/red via a dropdown + conditional formatting) and the reasons to **Audit Note** (blank when PASS). It checks asset aspect/resolution/file-size/**video-duration**, caption length/hashtags/**links/placement/duplicates**, row **readiness** (Approved-but-not-ready), asset **link-sharing**, and duplicate assets. Reusing one asset across posts is **allowed** — it is only flagged when the sharers are on the **same platform** (the same feed would show it twice) or their **Visual Types disagree on the media kind** (an image post and a video post cannot share one file). The audit only *reports* — it never regenerates, moves, deletes, or re-permissions an asset.
 
@@ -69,7 +70,8 @@ content_hub/
     calendar.py          read sheet → jobs; write link/cost back
     workflow.py          orchestrator: generate → push → writeback
     sheet_ops.py         create the living sheet shell
-    edit_ops.py          in-place cell edits + bulk row appends (schema-aware guardrails)
+    edit_ops.py          in-place cell edits + bulk row appends (schema-aware guardrails);
+                         describe() reports the sheet's columns/rows (look before you write)
     audit.py             compliance audit: measure real assets + captions vs specs; write
                          PASS/WARN/FAIL to Audit Status (colour-coded) + reasons to Audit Note (live)
     preview.py           the self-contained HTML review page + the IG/FB/TikTok feed
