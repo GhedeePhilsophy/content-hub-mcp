@@ -96,6 +96,29 @@ def find_urls(text: str | None) -> list[str]:
     return [m.group(0) for m in _URL_RE.finditer(text or "")]
 
 
+def duplicate_asset_conflicts(a_platform: str, a_kind: str,
+                              b_platform: str, b_kind: str) -> tuple[str, ...]:
+    """Why two rows sharing one asset file is a finding — empty when it's fine.
+
+    Reusing one asset across posts is legitimate and common (the same clip on a TikTok
+    and on a Facebook Reel). It is only worth flagging when:
+
+      ``same_platform``  both posts go to the same platform — the audience would see
+                         the identical asset twice in one feed.
+      ``kind_mismatch``  the rows disagree about what the asset *is* (an image post and
+                         a video post cannot share one file; one of them is mis-typed).
+
+    Kind comes from Visual Type via [rules.plan_visual], so 'AI text-to-video' and
+    'Recorded video of Wiah' are the same kind — both are genuinely video.
+    """
+    reasons = []
+    if specs.norm_platform(a_platform) == specs.norm_platform(b_platform):
+        reasons.append("same_platform")
+    if (a_kind or "") != (b_kind or ""):
+        reasons.append("kind_mismatch")
+    return tuple(reasons)
+
+
 def duplicate_hashtags(*texts: str | None) -> list[str]:
     """Hashtags (case-insensitive) that appear more than once across the given fields."""
     seen: dict[str, int] = {}
@@ -120,6 +143,8 @@ class RowAudit:
     post_type: str
     fmt: str
     status: str
+    visual_type: str = ""   # the row's Visual Type cell, verbatim
+    kind: str = ""          # media kind derived from it: image | video | carousel | skip
     row_index: int = 0
     overall: str = "NA"
     checks: list[Check] = field(default_factory=list)
@@ -493,6 +518,7 @@ def audit_calendar(calendar_id: str, *, mode: str = "dry-run",
         post_type, issues = specs.classify(job.platform, job.fmt, kind, is_reel) \
             if kind in ("image", "video", "carousel") else (kind, [])
         row = RowAudit(job.row_id, job.platform, post_type, job.fmt, job.status,
+                       visual_type=job.visual_type, kind=kind,
                        row_index=job.row_index, issues=issues)
 
         audit_caption(row, job.caption, job.hashtags, specs.caption_spec(job.platform),
@@ -510,16 +536,36 @@ def audit_calendar(calendar_id: str, *, mode: str = "dry-run",
         row.finalize()
         rows.append(row)
 
-    # duplicate-asset post-pass (same Drive md5 reused across rows)
+    # duplicate-asset post-pass (same Drive md5 reused across rows). Sharing an asset is
+    # allowed — only the collisions in [duplicate_asset_conflicts] are reported.
     by_md5: dict[str, list[RowAudit]] = {}
     for r, md5 in md5_sink:
         by_md5.setdefault(md5, []).append(r)
     for md5, sharers in by_md5.items():
-        if len(sharers) > 1:
-            ids = ", ".join(s.row_id for s in sharers)
-            for r in sharers:
-                r.add("duplicate_asset", "WARN", f"same asset file as {ids}")
-                r.finalize()
+        if len(sharers) < 2:
+            continue
+        for r in sharers:
+            clashes: dict[str, list[RowAudit]] = {}
+            for other in sharers:
+                if other is r:
+                    continue
+                for reason in duplicate_asset_conflicts(r.platform, r.kind,
+                                                        other.platform, other.kind):
+                    clashes.setdefault(reason, []).append(other)
+            if not clashes:
+                continue
+            if clashes.get("same_platform"):
+                ids = ", ".join(o.row_id for o in clashes["same_platform"])
+                r.add("duplicate_asset", "WARN",
+                      f"same asset file as {ids} — all on {r.platform or 'this platform'}")
+            if clashes.get("kind_mismatch"):
+                mine = r.visual_type or r.kind or "?"
+                theirs = ", ".join(f"{o.row_id} ({o.visual_type or o.kind or '?'})"
+                                   for o in clashes["kind_mismatch"])
+                r.add("duplicate_asset_kind", "WARN",
+                      f"same asset file as {theirs}, but this row is {mine} — "
+                      "one asset cannot serve both")
+            r.finalize()
 
     updated = 0
     if write:

@@ -135,6 +135,32 @@ def test_duplicate_hashtags_flagged():
     assert any(c.name == "hashtag_dupes" for c in r.checks)
 
 
+# --- duplicate assets ------------------------------------------------------
+def test_shared_asset_across_platforms_is_allowed():
+    """The same clip on TikTok and on an Instagram Reel is legitimate reuse."""
+    assert audit.duplicate_asset_conflicts("TikTok", "video", "Instagram", "video") == ()
+
+
+def test_shared_asset_on_same_platform_flagged():
+    assert "same_platform" in audit.duplicate_asset_conflicts(
+        "Instagram", "video", "Instagram", "video")
+
+
+def test_shared_asset_platform_aliases_count_as_the_same_platform():
+    assert "same_platform" in audit.duplicate_asset_conflicts(
+        "IG", "image", "Instagram Reel", "image")
+
+
+def test_shared_asset_with_mismatched_kind_flagged():
+    assert "kind_mismatch" in audit.duplicate_asset_conflicts(
+        "TikTok", "video", "Facebook", "image")
+
+
+def test_shared_asset_can_be_flagged_for_both_reasons():
+    assert set(audit.duplicate_asset_conflicts("Instagram", "video", "Instagram", "image")) \
+        == {"same_platform", "kind_mismatch"}
+
+
 # --- readiness -------------------------------------------------------------
 @dataclass
 class _Plan:
