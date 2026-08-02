@@ -1091,11 +1091,23 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
 .s-vert{height:100%;overflow-y:auto;scroll-snap-type:y mandatory;overscroll-behavior:contain;
   background:#000}
 .s-vert::-webkit-scrollbar{width:0}
+/* `align-items:safe center` is the second declaration on purpose: centring is what we want
+   while the media fits, but a flex item taller than its line overflows a plain `center` at
+   BOTH ends, and the top overflow is unreachable behind overflow:hidden. `safe` degrades to
+   start alignment in that case, so a mis-measured slide loses its bottom, never its top.
+   Browsers without the keyword drop the line and keep the plain `center` above it. */
 .s-slide{position:relative;height:100%;scroll-snap-align:start;scroll-snap-stop:always;
-  display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden}
-.s-slide .media{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+  display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden;
+  align-items:safe center}
+/* aspect-ratio:auto cancels the 9:16 these nodes carry over from .media.vframe.vert /
+   .poster.vert in the review feed. The spec says a specified width AND height wins over
+   aspect-ratio, and Blink agrees — but WebKit sizes these flex items from the ratio anyway,
+   making the media ~1.78x the slide width where the slide is only as tall as the phone body.
+   Centred and clipped, that ate the top of every reel in Safari and nothing in Chrome. */
+.s-slide .media{width:100%;height:100%;aspect-ratio:auto;display:flex;align-items:center;
+  justify-content:center}
 .s-slide .media img{width:100%;height:100%;object-fit:cover}
-.s-slide .poster{width:100%;height:100%;min-height:0}
+.s-slide .poster{width:100%;height:100%;aspect-ratio:auto;min-height:0}
 .s-rail{position:absolute;right:9px;bottom:96px;display:flex;flex-direction:column;
   align-items:center;gap:15px;color:#fff;z-index:3}
 .s-rail .ri{display:flex;flex-direction:column;align-items:center;gap:3px;
