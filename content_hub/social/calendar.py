@@ -425,7 +425,10 @@ class Calendar:
                     return job
             job.assets = self._assets_for(job)
             return job
-        if not prompt:
+        # A single image/video needs a Prompt to generate from — unless a Created Asset
+        # Link is set, in which case generate copies that file and never calls the model
+        # (same exemption the carousel branch above makes for a folder-sourced set).
+        if not prompt and not job.selected_link:
             job.skip_reason = "no prompt in Prompt column"
             return job
 
