@@ -214,6 +214,43 @@ def social_describe_calendar(calendar_id: str) -> dict:
 
 
 @mcp.tool()
+def social_get_rows(calendar_id: str, row_ids: list[str] | None = None,
+                    statuses: list[str] | None = None,
+                    platforms: list[str] | None = None,
+                    columns: list[str] | None = None,
+                    limit: int = 25, offset: int = 0) -> dict:
+    """Read rows of the LIVING Google Sheet back in FULL — every cell value, not the summary
+    social_describe_calendar gives. Use it to read a post's real current copy before
+    rewriting it (so an edit is an informed change, not a blind overwrite), or to pull a set
+    of posts for review.
+
+    Filters combine (AND); omit them all to walk the whole calendar:
+      row_ids    exact Row IDs, case-insensitive. Ones that don't exist come back in
+                 'not_found' rather than failing the call.
+      statuses   e.g. ['Awaiting Asset', 'Draft'] — validated against the allowed statuses.
+      platforms  e.g. ['Instagram'] — validated against the allowed platforms.
+      columns    restrict the payload to these columns (header text or alias, e.g.
+                 ['Caption', 'Prompt']); Row ID is always included. Omit for all columns.
+
+    Captions and prompts are long, so results are PAGED: 'limit' defaults to 25 (max 200),
+    'offset' walks the rest; 'total_matched' and 'has_more' tell you what remains. Rows come
+    back in sheet order, each as {'row_id', 'row', 'cells': {header: value}}.
+
+    An unknown column name or filter value is an error and NO rows are returned — a
+    silently-ignored filter would hand you the wrong rows.
+
+    Args:
+        calendar_id: e.g. 'Q3_2026'.
+
+    Read-only — there is no 'mode' because nothing is written and nothing is spent.
+    """
+    from content_hub.social import edit_ops
+    return edit_ops.get_rows(calendar_id, row_ids=row_ids, statuses=statuses,
+                             platforms=platforms, columns=columns,
+                             limit=limit, offset=offset, emit=_emit)
+
+
+@mcp.tool()
 def social_edit_calendar(calendar_id: str, edits: list[dict], mode: str = "live",
                          force: bool = False) -> dict:
     """Edit cells of EXISTING rows in the LIVING Google Sheet in place — the direct
