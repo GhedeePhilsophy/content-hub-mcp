@@ -19,6 +19,12 @@ from __future__ import annotations
 
 import sys
 
+# Eager, deliberate: openpyxl pulls in numpy's C extension, and loading that DLL
+# lazily from inside a tool call — i.e. on the running event loop — deadlocks on
+# Windows/py3.14, hanging the server forever (the client sees a request timeout).
+# Importing it here loads it during startup instead. Do not make this lazy.
+import openpyxl  # noqa: F401
+
 from mcp.server.fastmcp import FastMCP
 
 from content_hub.core import config
