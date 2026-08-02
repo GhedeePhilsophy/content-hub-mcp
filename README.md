@@ -14,6 +14,7 @@ in place. The tools:
 | `social_add_rows` | Append **new** rows to the live sheet in bulk (this is how you seed a fresh calendar). Each row is keyed by header name and must carry a Row ID; new rows default to Status `Draft`, and an approval status can't be set. |
 | `social_edit_calendar` | Edit cells of **existing** rows in the live sheet in place. Edits name a row by **Row ID** and a column by header name; only the named cells are written. Status is not editable (human-only approval); the machine-owned columns are `force`-gated. |
 | `social_describe_calendar` | Report the live sheet's shape — its columns (exact header text, which are editable and why not, allowed values) and its rows (Row ID, status, platform, …). Read-only, no `mode`; call it before `edit`/`add` when the column names or Row IDs aren't certain. |
+| `social_get_rows` | Read rows back in **full** — every cell value, filtered by Row ID / status / platform and paged (`limit` 25, max 200). Read-only, no `mode`; use it to read a post's real current copy before rewriting it. |
 | `social_generate_media` | Read the live sheet's Draft rows → generate the missing AI images/videos → upload to Drive → write each link / cost / model / notes back **into the live sheet in place** (Sheets API). |
 | `social_build_preview` | Build an HTML review page from the live sheet and publish it next to the calendar as `Ghedee_Social_Calendar_<id>_preview.html`. |
 | `social_export_calendar` | Write a scheduler's bulk-import file from the live sheet — **Metricool** or **Publer** CSV. Exports finished rows only, resolves each Drive asset to a fetchable URL, and expands carousels into their slides. |
@@ -202,6 +203,14 @@ API `generate` uses, so only the cells named are touched (concurrent human edits
   takes no `mode`. Call it whenever the sheet's column names or Row IDs aren't certain —
   a guessed column name is rejected, and since the batch is all-or-nothing it discards
   every other edit with it.
+- **`social_get_rows`** — read rows back in **full**: every cell value, not the summary
+  `describe` gives. Filter by `row_ids` / `statuses` / `platforms` (AND'd; omit all to walk
+  the calendar) and narrow the payload with `columns`. Captions and prompts are long, so
+  results are paged — `limit` defaults to 25 (max 200), `offset` walks the rest, and
+  `total_matched` / `has_more` say what remains. An unknown column or filter value is an
+  error and no rows come back, so a mistyped filter can't quietly hand you the wrong rows.
+  Read it before rewriting a post, so an edit is an informed change and not a blind
+  overwrite.
 
 `edit` and `add` take `mode` = `dry-run` (preview the resolved writes, touch nothing) or `live`
 (write). There's no `mock` here — nothing is generated or spent, so `dry-run` already is

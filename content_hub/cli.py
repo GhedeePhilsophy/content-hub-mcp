@@ -40,6 +40,14 @@ def _print_result(res: dict) -> None:
     print(json.dumps(res, indent=2, ensure_ascii=False))
 
 
+def _csv_arg(value: str | None) -> list[str] | None:
+    """Split a comma-separated CLI filter into a list, or None when the flag was omitted
+    (None means 'no filter' — an empty list would read as 'match nothing')."""
+    if not value:
+        return None
+    return [v.strip() for v in value.split(",") if v.strip()] or None
+
+
 def _load_json_arg(value: str):
     """Parse a JSON CLI argument that is either inline JSON or ``@path`` to a .json file
     (used by `add`/`edit` for their list-of-dicts payloads)."""
@@ -111,6 +119,21 @@ def _register_social(workflows) -> None:
                         "and its rows (Row ID / status / …). Read-only; no mode.")
     de.add_argument("calendar_id")
     de.set_defaults(func=lambda a: social.describe(a.calendar_id))
+
+    gr = ops.add_parser("get", help="Read rows back in full (every cell value). Filter by "
+                        "Row ID / status / platform; paged. Read-only; no mode.")
+    gr.add_argument("calendar_id")
+    gr.add_argument("--row-ids", help="Comma-separated Row IDs, e.g. 10-15-TT-01,10-15-IGR-01.")
+    gr.add_argument("--statuses", help="Comma-separated statuses, e.g. 'Awaiting Asset'.")
+    gr.add_argument("--platforms", help="Comma-separated platforms, e.g. Instagram,Tiktok.")
+    gr.add_argument("--columns", help="Comma-separated columns to return (header or alias); "
+                                      "Row ID is always included. Omit for all.")
+    gr.add_argument("--limit", type=int, default=25, help="Rows per page (max 200).")
+    gr.add_argument("--offset", type=int, default=0, help="Skip this many matching rows.")
+    gr.set_defaults(func=lambda a: social.get_rows(
+        a.calendar_id, row_ids=_csv_arg(a.row_ids), statuses=_csv_arg(a.statuses),
+        platforms=_csv_arg(a.platforms), columns=_csv_arg(a.columns),
+        limit=a.limit, offset=a.offset))
 
     ad = ops.add_parser("add", help="Append new rows to the live sheet in bulk "
                         "(each row is a {header: value} dict; a Row ID is required).")

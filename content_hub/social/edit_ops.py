@@ -5,12 +5,14 @@ rows — without the download/modify/upload round-trip. Both operations reuse th
 Sheets-API writer that ``generate`` uses ([core.sheets.SheetsClient]), so an edit only
 touches the exact cells named and never clobbers a teammate's concurrent change.
 
-Three operations:
+Four operations:
 
   edit_rows  change cells of existing rows, addressed by Row ID + column name.
   add_rows   append new rows in bulk (used to seed a fresh calendar).
   describe   report the sheet's columns + rows without changing it — the look-before-you-
              write companion, so a caller names real columns instead of guessing.
+  get_rows   read rows back in FULL (every cell value, not just the summary describe
+             gives) — filtered by Row ID / status / platform and paged.
 
 Guardrails (the reason this is a tool and not a raw Sheets connector):
   * Status is NEVER editable — approval is a human-only decision. add_rows may set the
@@ -122,6 +124,23 @@ def _validate_constrained(field: str | None, value) -> str | None:
     return None
 
 
+def _cell_value(cal, r: int, c: int):
+    """One cell as a JSON-friendly value: dates as ISO strings (a date-only cell loses the
+    meaningless 00:00:00), numbers left numeric, everything else stripped text. A blank
+    cell is None rather than '' so a caller can test it directly."""
+    from datetime import date, datetime
+    v = cal.ws.cell(r, c).value
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date().isoformat() if v.time().isoformat() == "00:00:00" else v.isoformat(" ")
+    if isinstance(v, date):
+        return v.isoformat()
+    if isinstance(v, bool) or isinstance(v, (int, float)):
+        return v
+    return str(v).strip() or None
+
+
 def _rowid_index(cal) -> dict[str, int]:
     """normalized (lowercased, stripped) Row ID -> worksheet row index."""
     rid_col = cal.cols["row_id"]
@@ -191,8 +210,7 @@ def describe(calendar_id: str, *, emit=None) -> dict:
 
     def _cell(r: int, field: str):
         c = cal.cols.get(field)
-        v = cal.ws.cell(r, c).value if c else None
-        return str(v).strip() if v is not None and str(v).strip() else None
+        return _cell_value(cal, r, c) if c else None
 
     rows: list[dict] = []
     status_counts: dict[str, int] = {}
@@ -217,6 +235,131 @@ def describe(calendar_id: str, *, emit=None) -> dict:
             "columns": columns, "rows": rows,
             "row_count": len(rows), "status_counts": status_counts,
             "editable_columns": [c["header"] for c in columns if c["editable"]]}
+
+
+# --- read rows back in full -------------------------------------------------
+DEFAULT_GET_LIMIT = 25
+MAX_GET_LIMIT = 200
+
+
+def get_rows(calendar_id: str, *, row_ids: list[str] | None = None,
+             statuses: list[str] | None = None, platforms: list[str] | None = None,
+             columns: list[str] | None = None, limit: int = DEFAULT_GET_LIMIT,
+             offset: int = 0, emit=None) -> dict:
+    """Read calendar rows back in FULL — every cell value, not the summary ``describe`` gives.
+
+    ``describe`` answers "what shape is this sheet?"; this answers "what does it actually
+    say?" — the whole caption, prompt, visual direction, notes and links of the rows you
+    name. Use it to read a row before rewriting it, or to pull a set of posts for review.
+
+    Filters combine (AND); omitting all of them walks the whole calendar:
+      row_ids    exact Row IDs (case-insensitive). Any that don't exist come back in
+                 ``not_found`` rather than failing the call.
+      statuses   e.g. ['Awaiting Asset'] — validated against the sheet's allowed statuses.
+      platforms  e.g. ['Instagram'] — validated against the allowed platforms.
+      columns    restrict the payload to these columns (header text or alias); Row ID is
+                 always included. Omit for every column.
+
+    Captions and prompts are long, so results are PAGED: ``limit`` defaults to 25 (max 200)
+    and ``offset`` walks the rest — ``total_matched`` / ``has_more`` say whether more remain.
+    Rows come back in sheet order.
+
+    An unknown column name or filter value is an error and NO rows are returned (the same
+    all-or-nothing contract as edit_rows — a silently-ignored filter would quietly give you
+    the wrong rows). Read-only: no ``mode``, nothing written, nothing spent."""
+    emit = emit or _stderr
+    _drive_, _sid, tab, cal, link = _load_live(calendar_id)
+    header_cols = _header_columns(cal)
+    field_by_col = {c: f for f, c in cal.cols.items()}
+    errors: list[str] = []
+
+    try:
+        limit = max(1, min(int(limit), MAX_GET_LIMIT))
+    except (TypeError, ValueError):
+        errors.append(f"'limit' must be a number, got {limit!r}")
+    try:
+        offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        errors.append(f"'offset' must be a number, got {offset!r}")
+
+    # Which columns to emit: the requested subset (resolved like an edit's 'column'), or all.
+    if columns:
+        wanted: list[tuple[int, str]] = []
+        for name in columns:
+            col, _fld = _resolve_column(cal, header_cols, str(name))
+            if not col:
+                errors.append(f"no column named {str(name)!r} in the calendar")
+                continue
+            header = str(cal.ws.cell(1, col).value).strip()
+            if (col, header) not in wanted:
+                wanted.append((col, header))
+        rid_col = cal.cols["row_id"]
+        if not any(c == rid_col for c, _ in wanted):        # Row ID is always present
+            wanted.insert(0, (rid_col, str(cal.ws.cell(1, rid_col).value).strip()))
+        wanted.sort()
+    else:
+        wanted = [(c, str(cal.ws.cell(1, c).value).strip())
+                  for c in range(1, cal.ws.max_column + 1)
+                  if cal.ws.cell(1, c).value is not None
+                  and str(cal.ws.cell(1, c).value).strip()]
+
+    def _allowed(values, allowed_list, what) -> set[str]:
+        out = set()
+        for v in values:
+            if _norm(v) in {_norm(a) for a in allowed_list}:
+                out.add(_norm(v))
+            else:
+                errors.append(f"{what} {v!r} is not one of {allowed_list}")
+        return out
+
+    want_status = _allowed(statuses, STATUS_VALUES, "status") if statuses else None
+    want_platform = _allowed(platforms, PLATFORM_VALUES, "platform") if platforms else None
+    want_ids = {str(r).strip().lower() for r in row_ids if str(r).strip()} if row_ids else None
+
+    index = _rowid_index(cal)
+    not_found = sorted(want_ids - index.keys()) if want_ids else []
+
+    if errors:
+        return {"calendar_id": calendar_id, "sheet_link": link, "rows": [],
+                "total_matched": 0, "returned": 0, "offset": offset, "has_more": False,
+                "not_found": not_found, "errors": errors,
+                "note": f"{len(errors)} invalid argument(s) — no rows returned."}
+
+    status_col, platform_col = cal.cols.get("status"), cal.cols.get("platform")
+    matched: list[tuple[str, int]] = []
+    for row_id, r in sorted(index.items(), key=lambda kv: kv[1]):
+        if want_ids is not None and row_id not in want_ids:
+            continue
+        if want_status is not None:
+            v = _cell_value(cal, r, status_col) if status_col else None
+            if _norm(v) not in want_status:
+                continue
+        if want_platform is not None:
+            v = _cell_value(cal, r, platform_col) if platform_col else None
+            if _norm(v) not in want_platform:
+                continue
+        matched.append((row_id, r))
+
+    page = matched[offset:offset + limit]
+    rows = [{"row_id": _cell_value(cal, r, cal.cols["row_id"]) or row_id, "row": r,
+             "cells": {header: _cell_value(cal, r, c) for c, header in wanted}}
+            for row_id, r in page]
+
+    emit(f"get_rows: {len(rows)} of {len(matched)} matching row(s) from "
+         f"{sheet_ops.live_sheet_name(calendar_id)}")
+    result = {"calendar_id": calendar_id, "tab": tab, "sheet_link": link,
+              "rows": rows, "total_matched": len(matched), "returned": len(rows),
+              "offset": offset, "limit": limit,
+              "has_more": offset + len(rows) < len(matched),
+              "not_found": not_found, "errors": errors,
+              "columns_returned": [h for _c, h in wanted]}
+    if result["has_more"]:
+        result["note"] = (f"showing {offset + 1}-{offset + len(rows)} of {len(matched)}; "
+                          f"pass offset={offset + len(rows)} for the next page.")
+    if not_found:
+        result["note"] = ((result.get("note", "") + " ").strip() +
+                          f" {len(not_found)} requested Row ID(s) are not in the calendar.")
+    return result
 
 
 # --- edit existing rows -----------------------------------------------------
