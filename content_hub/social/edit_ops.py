@@ -5,10 +5,12 @@ rows — without the download/modify/upload round-trip. Both operations reuse th
 Sheets-API writer that ``generate`` uses ([core.sheets.SheetsClient]), so an edit only
 touches the exact cells named and never clobbers a teammate's concurrent change.
 
-Two operations:
+Three operations:
 
   edit_rows  change cells of existing rows, addressed by Row ID + column name.
   add_rows   append new rows in bulk (used to seed a fresh calendar).
+  describe   report the sheet's columns + rows without changing it — the look-before-you-
+             write companion, so a caller names real columns instead of guessing.
 
 Guardrails (the reason this is a tool and not a raw Sheets connector):
   * Status is NEVER editable — approval is a human-only decision. add_rows may set the
@@ -141,6 +143,80 @@ def _last_used_row(cal) -> int:
         if v is not None and str(v).strip():
             last = r
     return last
+
+
+# --- describe the sheet's shape ---------------------------------------------
+def describe(calendar_id: str, *, emit=None) -> dict:
+    """Report the living sheet's SHAPE — its columns and its rows — without changing it.
+
+    This is the look-before-you-write companion to edit_rows / add_rows: it answers "what
+    column names does this calendar actually have, and which Row IDs exist?" so a caller
+    composes edits against the real header row instead of guessing (a guessed column name
+    is rejected, and because the batch is all-or-nothing it takes every other edit with it).
+
+    Returns, per column: the exact header text to pass as ``column``, its canonical field,
+    and whether it is writable — ``editable`` false means edit_rows will refuse it, with
+    ``why`` naming the guardrail ('status' is human-only; the machine-owned columns need
+    force=True). ``allowed_values`` is set for the constrained columns.
+
+    Returns, per row: the Row ID (pass it verbatim as ``row_id``), its worksheet row, and
+    the human-owned summary fields (date / platform / format / status / headline), plus
+    whether an asset link is present.
+
+    Read-only: there is no ``mode`` because nothing is ever written and nothing is spent."""
+    emit = emit or _stderr
+    _drive_, _sid, tab, cal, link = _load_live(calendar_id)
+    header_cols = _header_columns(cal)
+    field_by_col = {c: f for f, c in cal.cols.items()}
+
+    columns: list[dict] = []
+    for c in range(1, cal.ws.max_column + 1):
+        header = cal.ws.cell(1, c).value
+        if header is None or not str(header).strip():
+            continue
+        field = field_by_col.get(c)
+        info: dict = {"header": str(header).strip(), "field": field, "column": c,
+                      "editable": True}
+        if field == STATUS_FIELD:
+            info["editable"] = False
+            info["why"] = "approval is a human-only decision — set Status in the sheet"
+        elif field in MACHINE_FIELDS:
+            info["editable"] = False
+            info["why"] = "written by generate — pass force=true to overwrite deliberately"
+        elif field in ("audit_status", "audit_note"):
+            info["why"] = "written by the audit each run — an edit here is overwritten"
+        if field in _CONSTRAINED:
+            info["allowed_values"] = list(_CONSTRAINED[field])
+        columns.append(info)
+
+    def _cell(r: int, field: str):
+        c = cal.cols.get(field)
+        v = cal.ws.cell(r, c).value if c else None
+        return str(v).strip() if v is not None and str(v).strip() else None
+
+    rows: list[dict] = []
+    status_counts: dict[str, int] = {}
+    for row_id, r in sorted(_rowid_index(cal).items(), key=lambda kv: kv[1]):
+        status = _cell(r, "status")
+        rows.append({
+            "row_id": _cell(r, "row_id") or row_id,   # the sheet's own spelling
+            "row": r,
+            "date": _cell(r, "date"),
+            "platform": _cell(r, "platform"),
+            "format": _cell(r, "format"),
+            "visual_type": _cell(r, "visual_type"),
+            "status": status,
+            "headline": _cell(r, "hook"),
+            "has_asset": bool(_cell(r, "asset_link") or _cell(r, "selected_asset")),
+        })
+        status_counts[status or "(blank)"] = status_counts.get(status or "(blank)", 0) + 1
+
+    emit(f"describe: {len(columns)} column(s), {len(rows)} row(s) in "
+         f"{sheet_ops.live_sheet_name(calendar_id)}")
+    return {"calendar_id": calendar_id, "tab": tab, "sheet_link": link,
+            "columns": columns, "rows": rows,
+            "row_count": len(rows), "status_counts": status_counts,
+            "editable_columns": [c["header"] for c in columns if c["editable"]]}
 
 
 # --- edit existing rows -----------------------------------------------------

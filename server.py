@@ -189,6 +189,31 @@ def social_export_calendar(calendar_id: str, target: str = "metricool",
 
 
 @mcp.tool()
+def social_describe_calendar(calendar_id: str) -> dict:
+    """Report the LIVING Google Sheet's SHAPE — its columns and its rows — without changing
+    anything. CALL THIS BEFORE social_edit_calendar / social_add_rows when you are not
+    certain of the sheet's exact column names or Row IDs: a guessed column name is rejected,
+    and because those tools are all-or-nothing a single bad name discards the whole batch.
+
+    Per column it returns the exact header text to pass as 'column', the canonical field, and
+    whether it is writable — editable=false means an edit is refused, with 'why' naming the
+    guardrail (Status is human-only; Generated Asset Link / Est. Cost / AI Model need
+    force=true). Constrained columns also carry their 'allowed_values'.
+
+    Per row it returns the Row ID (pass it verbatim as 'row_id'), its worksheet row, and the
+    row's date / platform / format / visual type / status / headline, plus whether an asset
+    link is already present.
+
+    Args:
+        calendar_id: e.g. 'Q3_2026'.
+
+    Read-only — there is no 'mode' because nothing is written and nothing is spent.
+    """
+    from content_hub.social import edit_ops
+    return edit_ops.describe(calendar_id, emit=_emit)
+
+
+@mcp.tool()
 def social_edit_calendar(calendar_id: str, edits: list[dict], mode: str = "live",
                          force: bool = False) -> dict:
     """Edit cells of EXISTING rows in the LIVING Google Sheet in place — the direct

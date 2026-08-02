@@ -13,6 +13,7 @@ in place. The tools:
 | `social_create_calendar` | Start a new calendar: create the Drive folder tree (folder named by the Calendar ID) + an empty, styled living-sheet shell in `00_Calendar & Docs`. Cowork fills it in with `social_add_rows` — no local file. |
 | `social_add_rows` | Append **new** rows to the live sheet in bulk (this is how you seed a fresh calendar). Each row is keyed by header name and must carry a Row ID; new rows default to Status `Draft`, and an approval status can't be set. |
 | `social_edit_calendar` | Edit cells of **existing** rows in the live sheet in place. Edits name a row by **Row ID** and a column by header name; only the named cells are written. Status is not editable (human-only approval); the machine-owned columns are `force`-gated. |
+| `social_describe_calendar` | Report the live sheet's shape — its columns (exact header text, which are editable and why not, allowed values) and its rows (Row ID, status, platform, …). Read-only, no `mode`; call it before `edit`/`add` when the column names or Row IDs aren't certain. |
 | `social_generate_media` | Read the live sheet's Draft rows → generate the missing AI images/videos → upload to Drive → write each link / cost / model / notes back **into the live sheet in place** (Sheets API). |
 | `social_build_preview` | Build an HTML review page from the live sheet and publish it next to the calendar as `Ghedee_Social_Calendar_<id>_preview.html`. |
 | `social_export_calendar` | Write a scheduler's bulk-import file from the live sheet — **Metricool** or **Publer** CSV. Exports finished rows only, resolves each Drive asset to a fetchable URL, and expands carousels into their slides. |
@@ -194,8 +195,15 @@ API `generate` uses, so only the cells named are touched (concurrent human edits
   come back, so the sheet is never left half-edited.
 - **`social_add_rows`** — append new rows in bulk to seed a calendar. Each row is a
   `{header: value}` dict and must carry a Row ID; rows land after the last used row.
+- **`social_describe_calendar`** — look before you write. Reports the sheet's **columns**
+  (the exact header text to pass as `column`, whether each is editable and why not, and
+  the `allowed_values` of the constrained ones) and its **rows** (Row ID, date, platform,
+  format, visual type, status, headline, whether an asset link exists). Read-only, so it
+  takes no `mode`. Call it whenever the sheet's column names or Row IDs aren't certain —
+  a guessed column name is rejected, and since the batch is all-or-nothing it discards
+  every other edit with it.
 
-Both take `mode` = `dry-run` (preview the resolved writes, touch nothing) or `live`
+`edit` and `add` take `mode` = `dry-run` (preview the resolved writes, touch nothing) or `live`
 (write). There's no `mock` here — nothing is generated or spent, so `dry-run` already is
 the safe rehearsal. **Guardrails** (why this is a schema-aware tool, not a raw Sheets
 connector): **Status is never editable** — approval is a human-only decision; new rows

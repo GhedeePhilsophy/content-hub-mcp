@@ -107,6 +107,11 @@ def _register_social(workflows) -> None:
                    help="Recreate an empty shell even if a live sheet exists (trashes the old).")
     c.set_defaults(func=lambda a: sheet_ops.create(a.calendar_id, replace=a.replace))
 
+    de = ops.add_parser("describe", help="Show the live sheet's columns (which are editable) "
+                        "and its rows (Row ID / status / …). Read-only; no mode.")
+    de.add_argument("calendar_id")
+    de.set_defaults(func=lambda a: social.describe(a.calendar_id))
+
     ad = ops.add_parser("add", help="Append new rows to the live sheet in bulk "
                         "(each row is a {header: value} dict; a Row ID is required).")
     ad.add_argument("calendar_id")
