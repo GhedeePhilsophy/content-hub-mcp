@@ -110,6 +110,25 @@ def _extract_first_frame(video_bytes: bytes) -> bytes | None:
                 pass
 
 
+def _uri_dims(uri: str | None) -> tuple[int, int] | None:
+    """Pixel size of an encoded data: URI, read from the JPEG header only (PIL opens
+    lazily, so no full decode). Used to emit width/height on the <img>: without them a
+    slide has zero height until it decodes, and a carousel that reflows mid-load makes
+    Safari re-snap to a later slide. Returns None if it can't be determined."""
+    if not uri or "," not in uri:
+        return None
+    try:
+        from PIL import Image
+        return Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).size
+    except Exception:
+        return None
+
+
+def _dim_attrs(uri: str | None) -> str:
+    wh = _uri_dims(uri)
+    return f' width="{wh[0]}" height="{wh[1]}"' if wh else ""
+
+
 def _data_uri(ref: ImageRef, max_px: int, cache=None) -> str | None:
     ck = f"{ref.key}@{max_px}"
     produce = lambda: _encode(ref.fetch(), max_px)  # noqa: E731
@@ -400,9 +419,14 @@ def _hashtags_block(tags: str, label: str) -> str:
 def _media_html(assets: dict, link: str | None, is_vertical: bool, recorded: bool,
                 failed: bool = False, reason: str = "", cache=None) -> str:
     if assets["kind"] == "carousel":
+        # Slides carry width/height (and are NOT lazy): a lazy slide has no box until it
+        # decodes, and each late reflow re-triggers Safari's mandatory snap, which lands
+        # the carousel on slide 3 or 4 instead of the first. The bytes are already inline,
+        # so lazy bought no network anyway.
+        uris = [_data_uri(ref, 520, cache) for ref in assets["images"]]
         slides = "".join(
-            f'<img src="{_data_uri(ref, 520, cache)}" alt="slide {i+1}" loading="lazy">'
-            for i, ref in enumerate(assets["images"]))
+            f'<img src="{uri}" alt="slide {i+1}"{_dim_attrs(uri)}>'
+            for i, uri in enumerate(uris))
         dots = "".join('<span></span>' for _ in assets["images"])
         n = len(assets["images"])
         return (f'<div class="media carousel"><div class="track">{slides}</div>'
@@ -886,7 +910,11 @@ header.top .who.warn b{color:var(--terra)}
 .media.carousel{position:relative}
 .media.carousel .track{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none}
 .media.carousel .track::-webkit-scrollbar{display:none}
-.media.carousel .track img{flex:0 0 100%;scroll-snap-align:center}
+/* snapping stays OFF until every slide has loaded (see bindCarousel) — while the track
+   is still reflowing, Safari re-snaps to whichever slide is nearest and the carousel
+   opens mid-way through. 'start' also re-targets less than 'center' under resize. */
+.media.carousel .track.nosnap{scroll-snap-type:none}
+.media.carousel .track img{flex:0 0 100%;scroll-snap-align:start}
 .media .badge{position:absolute;top:10px;right:10px;background:rgba(0,0,0,.6);color:#fff;
   font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px}
 .dots{position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:5px}
@@ -1214,23 +1242,53 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
   </button>
 </div>
 <script>
-document.querySelectorAll('.media.carousel').forEach(function(c){
-  var track=c.querySelector('.track'), dots=c.querySelectorAll('.dots span'),
-      idxEl=c.querySelector('.cidx'), prev=c.querySelector('.prev'),
-      next=c.querySelector('.next'), n=track.children.length, i=0;
+// One binder for every carousel on the page — the review feed's own, and the clones the
+// platform simulator builds (which arrive stripped of their nav, so it is re-created here).
+// A carousel MUST open on slide 1. It didn't in Safari: slides decode after first layout,
+// and every reflow made the mandatory scroll-snap re-target, so the track drifted to slide
+// 3 or 4 and the scroll handler then recorded that drift as the current index. Fix is in
+// three parts — reserved boxes (width/height on each <img>), snapping held off until the
+// images have settled, and scroll events ignored until then.
+function bindCarousel(c){
+  var track=c.querySelector('.track'); if(!track||track.__bound) return; track.__bound=1;
+  var n=track.children.length, i=0, settled=false;
+  var prev=c.querySelector('.cnav.prev'), next=c.querySelector('.cnav.next'),
+      idxEl=c.querySelector('.cidx'), dots=c.querySelectorAll('.dots span');
+  function mk(tag,cls,txt){ var e=document.createElement(tag); if(cls) e.className=cls;
+    if(txt!=null) e.textContent=txt; return e; }
+  if(!prev){ prev=mk('button','cnav prev','‹');
+    prev.setAttribute('aria-label','Previous slide'); c.appendChild(prev); }
+  if(!next){ next=mk('button','cnav next','›');
+    next.setAttribute('aria-label','Next slide'); c.appendChild(next); }
+  if(!idxEl){ var badge=mk('span','badge'); idxEl=mk('b','cidx','1');
+    badge.appendChild(idxEl); badge.appendChild(document.createTextNode('/'+n));
+    c.appendChild(badge); }
   function sync(){ dots.forEach(function(d,j){d.classList.toggle('on',j===i)});
     if(idxEl) idxEl.textContent=i+1;
-    if(prev) prev.disabled=i===0; if(next) next.disabled=i===n-1; }
+    prev.disabled=i===0; next.disabled=i===n-1; }
   function go(k){ i=Math.max(0,Math.min(n-1,k));
     track.scrollTo({left:i*track.clientWidth,behavior:'smooth'}); sync(); }
-  if(prev) prev.addEventListener('click',function(e){e.stopPropagation();go(i-1)});
-  if(next) next.addEventListener('click',function(e){e.stopPropagation();go(i+1)});
+  prev.addEventListener('click',function(e){e.stopPropagation();go(i-1)});
+  next.addEventListener('click',function(e){e.stopPropagation();go(i+1)});
   dots.forEach(function(d,j){d.addEventListener('click',function(){go(j)})});
   var t; track.addEventListener('scroll',function(){clearTimeout(t);t=setTimeout(function(){
+    if(!settled) return;                       // load-time drift is not a user swipe
     var k=Math.round(track.scrollLeft/Math.max(1,track.clientWidth));
     if(k!==i){i=k; sync();} },90)});
+  track.classList.add('nosnap');
+  function settle(){ if(settled) return; settled=true;
+    track.scrollLeft=0; i=0; track.classList.remove('nosnap'); sync(); }
+  var imgs=[].slice.call(track.querySelectorAll('img')), left=imgs.length;
+  function tick(){ if(--left<=0) requestAnimationFrame(settle); }
+  if(!left) settle();
+  imgs.forEach(function(im){
+    if(im.complete) tick();
+    else { im.addEventListener('load',tick,{once:true});
+           im.addEventListener('error',tick,{once:true}); } });
+  setTimeout(settle,4000);                     // never leave snapping off for good
   sync();
-});
+}
+document.querySelectorAll('.media.carousel').forEach(bindCarousel);
 var flt={f:'all', s:'all'};
 function statusMatch(s){
   if(flt.s==='all') return true;
@@ -1742,23 +1800,7 @@ var ICONS = {{ICONS}};
   // Cloned carousels arrive without their bindings; re-attach the page's own binder so a
   // multi-slide post swipes in the simulator exactly as it does in the review feed.
   function rebindCarousels(root){
-    root.querySelectorAll('.media.carousel').forEach(function(c){
-      var track=c.querySelector('.track'); if(!track) return;
-      var n=track.children.length, i=0;
-      var prev=el('button','cnav prev','‹'), next=el('button','cnav next','›');
-      var badge=el('span','badge'); var bi=el('b','cidx','1');
-      badge.appendChild(bi); badge.appendChild(document.createTextNode('/'+n));
-      c.appendChild(prev); c.appendChild(next); c.appendChild(badge);
-      function sync(){ bi.textContent=i+1; prev.disabled=i===0; next.disabled=i===n-1; }
-      function go(k){ i=Math.max(0,Math.min(n-1,k));
-        track.scrollTo({left:i*track.clientWidth,behavior:'smooth'}); sync(); }
-      prev.addEventListener('click',function(e){e.stopPropagation();go(i-1)});
-      next.addEventListener('click',function(e){e.stopPropagation();go(i+1)});
-      var t; track.addEventListener('scroll',function(){clearTimeout(t);t=setTimeout(function(){
-        var k=Math.round(track.scrollLeft/Math.max(1,track.clientWidth));
-        if(k!==i){i=k; sync();} },90)});
-      sync();
-    });
+    root.querySelectorAll('.media.carousel').forEach(bindCarousel);
   }
   // ---- video posts: poster frame + a play button that opens the clip on Drive ----
   // There is deliberately NO inline playback. Both embed routes were tried and measured:
