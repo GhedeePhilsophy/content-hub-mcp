@@ -233,9 +233,9 @@ def test_check_media_all_pass():
 
 
 def test_video_duration_over_max_fails_under_min_warns():
-    spec = specs.media_spec("Instagram", specs.REEL)  # 3–90s
+    spec = specs.media_spec("Instagram", specs.REEL)  # 3–180s
     over = _row()
-    audit._check_media(over, 1080, 1920, 5.0, spec, duration=120.0)
+    audit._check_media(over, 1080, 1920, 5.0, spec, duration=200.0)
     assert any(c.name == "duration" and c.verdict == "FAIL" for c in over.checks)
     under = _row()
     audit._check_media(under, 1080, 1920, 5.0, spec, duration=1.5)

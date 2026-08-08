@@ -82,9 +82,9 @@ SPECS: dict[str, dict[str, MediaSpec]] = {
         IMAGE_POST: MediaSpec("1:1", ("1:1", "4:5", "1.91:1"), 1080, 8),
         # Instagram has NO separate feed video — an uploaded video publishes as a Reel.
         # So a Post+video row is normalized to a 9:16 Reel (see classify()).
-        VIDEO_POST: MediaSpec("9:16", ("9:16",), 1080, 650, min_seconds=3, max_seconds=90,
+        VIDEO_POST: MediaSpec("9:16", ("9:16",), 1080, 650, min_seconds=3, max_seconds=180,
                               note="Instagram has no feed video; publishes as a Reel (9:16)."),
-        REEL: MediaSpec("9:16", ("9:16",), 1080, 650, min_seconds=3, max_seconds=90),
+        REEL: MediaSpec("9:16", ("9:16",), 1080, 650, min_seconds=3, max_seconds=180),
         # Up to 20 slides; the first slide locks the ratio (4:5 recommended).
         CAROUSEL: MediaSpec("4:5", ("1:1", "4:5"), 1080, 8,
                             carousel_min_slides=2, carousel_max_slides=20),
@@ -94,7 +94,7 @@ SPECS: dict[str, dict[str, MediaSpec]] = {
         # Facebook is the one platform with a genuine landscape feed-video format (up to 240 min).
         VIDEO_POST: MediaSpec("16:9", ("16:9", "4:5", "1:1"), 1080, 4096,
                               min_seconds=1, max_seconds=14400),
-        REEL: MediaSpec("9:16", ("9:16",), 1080, 1024, min_seconds=3, max_seconds=90),
+        REEL: MediaSpec("9:16", ("9:16",), 1080, 1024, min_seconds=3, max_seconds=180),
         CAROUSEL: MediaSpec("4:5", ("1:1", "4:5"), 1080, 30,
                             carousel_min_slides=2, carousel_max_slides=10),
     },
@@ -117,7 +117,7 @@ SPECS: dict[str, dict[str, MediaSpec]] = {
 _GENERIC = {
     IMAGE_POST: MediaSpec("1:1", ("1:1", "4:5", "1.91:1"), 1080, 30),
     VIDEO_POST: MediaSpec("16:9", ("16:9", "9:16", "1:1", "4:5"), 1080, 4096),
-    REEL: MediaSpec("9:16", ("9:16",), 1080, 1024, min_seconds=3, max_seconds=90),
+    REEL: MediaSpec("9:16", ("9:16",), 1080, 1024, min_seconds=3, max_seconds=180),
     CAROUSEL: MediaSpec("4:5", ("1:1", "4:5"), 1080, 30,
                         carousel_min_slides=2, carousel_max_slides=20),
 }
